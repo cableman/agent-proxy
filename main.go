@@ -815,7 +815,8 @@ func main() {
 		log.Print(err)
 	}
 
-	a := app.New()
+	// Explicit ID: FyneApp.toml is only read from the working directory in dev builds, and the Preferences API (used by the file dialog) needs one.
+	a := app.NewWithID("dk.aarhus.agent-proxy")
 	a.Settings().SetTheme(look{theme.DefaultTheme()})
 	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))
 	w := a.NewWindow("Agent Proxy")
