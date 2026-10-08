@@ -661,8 +661,8 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 			}
 		}, w)
 		d.SetFilter(storage.NewExtensionFileFilter([]string{".yml", ".yaml"}))
-		d.Resize(fyne.NewSize(800, 600))
 		d.Show()
+		d.Resize(fyne.NewSize(800, 600)) // after Show: fyne 2.8.1 panics on Resize before Show
 	})
 	dir := widget.NewButton("Choose folder", func() {
 		d := dialog.NewFolderOpen(func(u fyne.ListableURI, _ error) {
@@ -670,8 +670,8 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 				cfg.SetText(u.Path())
 			}
 		}, w)
-		d.Resize(fyne.NewSize(800, 600))
 		d.Show()
+		d.Resize(fyne.NewSize(800, 600))
 	})
 	form(w, "Settings", problem, []*widget.FormItem{
 		widget.NewFormItem("Traefik config", container.NewBorder(nil, nil, nil, container.NewHBox(file, dir), cfg)),
