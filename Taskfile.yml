@@ -2,6 +2,20 @@ version: '3'
 
 vars:
   BIN: agent-proxy
+  APP: Agent Proxy.app
+  ZIP: agent-proxy-macos.zip
+  # Bundle ID lives in FyneApp.toml; read it so codesign and Info.plist agree.
+  APP_ID:
+    sh: sed -n 's/^ID = "\(.*\)"$/\1/p' FyneApp.toml
+  # Go 1.27 links its runtime for macOS 13, so nothing older can run the binary.
+  MACOS_MIN: '13.0'
+  FYNE: go tool -modfile=tools/go.mod fyne
+
+env:
+  # macOS only; empty values fall back to Go's default "-O2 -g", and a value already set in the shell wins.
+  # -no_warn_duplicate_libraries silences Apple's linker about the -lobjc that cmd/go adds once per Objective-C package.
+  CGO_CFLAGS: '{{if eq OS "darwin"}}-O2 -g -mmacosx-version-min={{.MACOS_MIN}}{{end}}'
+  CGO_LDFLAGS: '{{if eq OS "darwin"}}-O2 -g -mmacosx-version-min={{.MACOS_MIN}} -Wl,-no_warn_duplicate_libraries{{end}}'
 
 tasks:
   default:
@@ -11,15 +25,13 @@ tasks:
   deps:
     desc: Install build prerequisites (Debian/Ubuntu or macOS)
     cmds:
-      - cmd: sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
+      - cmd: sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev libwayland-dev
         platforms: [linux]
-      - cmd: xcode-select --install || true
-        platforms: [darwin]
-      - cmd: go install fyne.io/tools/cmd/fyne@latest
+      - cmd: xcode-select -p >/dev/null 2>&1 || xcode-select --install
         platforms: [darwin]
 
   build:
-    desc: Build the binary
+    desc: Build the binary for this machine
     sources:
       - '*.go'
       - go.mod
@@ -49,23 +61,58 @@ tasks:
       - go test ./...
 
   icon:
-    desc: Regenerate assets/icon.png from assets/icon.svg (needs ImageMagick)
+    desc: Regenerate assets/icon.png from assets/icon.svg (needs ImageMagick 7)
     sources:
       - assets/icon.svg
     generates:
       - assets/icon.png
     cmds:
-      - convert -background none -density 96 assets/icon.svg -resize 256x256 -depth 8 PNG32:assets/icon.png
+      - magick -background none -density 384 assets/icon.svg -resize 1024x1024 -depth 8 PNG32:assets/icon.png
 
   package:
-    desc: Build "Agent Proxy.app" and zip it (macOS only, needs the fyne CLI from task deps)
+    desc: Build a universal (Apple Silicon + Intel) "{{.APP}}" and {{.ZIP}} (macOS only)
     platforms: [darwin]
+    # Timestamps, not checksums: fyne package bumps Build in FyneApp.toml mid-run, which would invalidate a checksum every time.
+    method: timestamp
+    sources:
+      - '*.go'
+      - go.mod
+      - go.sum
+      - assets/*
+      - FyneApp.toml
+      - tools/go.mod
+      - tools/go.sum
+    generates:
+      - '{{.APP}}/Contents/Info.plist'
+      - '{{.ZIP}}'
+    vars:
+      # Same release flags fyne package uses, plus the macOS minimum above.
+      CFLAGS: -O3 -pipe -D_FORTIFY_SOURCE=3 -fstack-protector-strong -mmacosx-version-min={{.MACOS_MIN}}
+      LDFLAGS: -Wl,-dead_strip_dylibs -mmacosx-version-min={{.MACOS_MIN}} -Wl,-no_warn_duplicate_libraries
+      GOBUILD: CGO_ENABLED=1 CGO_LDFLAGS="{{.LDFLAGS}}" go build -trimpath -tags release -ldflags "-s -w"
     cmds:
-      - fyne package -os darwin -release
-      - rm -f agent-proxy-macos.zip
-      - zip -qr agent-proxy-macos.zip "Agent Proxy.app"
+      - rm -rf build "{{.APP}}" {{.ZIP}}
+      - mkdir -p build
+      - GOARCH=arm64 CGO_CFLAGS="{{.CFLAGS}} -mbranch-protection=bti+pac-ret" {{.GOBUILD}} -o build/{{.BIN}}-arm64 .
+      - GOARCH=amd64 CGO_CFLAGS="{{.CFLAGS}} -fcf-protection" {{.GOBUILD}} -o build/{{.BIN}}-amd64 .
+      - lipo -create -output build/{{.BIN}} build/{{.BIN}}-arm64 build/{{.BIN}}-amd64
+      # Assembles the bundle (Info.plist, icns) around the prebuilt binary and bumps Build in FyneApp.toml.
+      - '{{.FYNE}} package --os darwin --exe build/{{.BIN}}'
+      - plutil -replace LSMinimumSystemVersion -string {{.MACOS_MIN}} "{{.APP}}/Contents/Info.plist"
+      - plutil -replace LSApplicationCategoryType -string public.app-category.developer-tools "{{.APP}}/Contents/Info.plist"
+      # Ad-hoc signature over the whole bundle, so Info.plist and resources are sealed.
+      - codesign --force --sign - --identifier {{.APP_ID}} "{{.APP}}"
+      - codesign --verify --strict "{{.APP}}"
+      - ditto -c -k --keepParent "{{.APP}}" {{.ZIP}}
+
+  run:app:
+    desc: Package and open "{{.APP}}" (macOS only)
+    platforms: [darwin]
+    deps: [package]
+    cmds:
+      - open "{{.APP}}"
 
   clean:
     desc: Remove build output
     cmds:
-      - rm -rf {{.BIN}} "Agent Proxy.app" agent-proxy-macos.zip
+      - rm -rf {{.BIN}} build "{{.APP}}" {{.ZIP}} .task

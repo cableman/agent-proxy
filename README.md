@@ -54,7 +54,7 @@ Traefik picks the file up on its own. A request to
 
 ### Linux
 
-Debian or Ubuntu need the X11 and OpenGL headers:
+Debian or Ubuntu need the X11, Wayland and OpenGL headers:
 
 ```sh
 task deps
@@ -64,16 +64,19 @@ or directly:
 
 ```sh
 sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev \
-  libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
+  libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev libwayland-dev
 ```
 
 ### macOS
 
 ```sh
-xcode-select --install          # clang
+xcode-select --install          # clang, or: task deps
 brew install go go-task         # Go and Task
-task deps                       # installs the fyne CLI used for packaging
 ```
+
+The fyne CLI used by `task package` is pinned in `tools/go.mod` and runs through
+`go tool`, so there is nothing else to install. ImageMagick 7 is only needed for
+`task icon`.
 
 Builds must be done on a Mac. Cross compiling from Linux needs the macOS SDK,
 which Apple's licence only allows on Apple hardware.
@@ -81,10 +84,11 @@ which Apple's licence only allows on Apple hardware.
 ## Build
 
 ```sh
-task build          # produces ./agent-proxy
+task build          # produces ./agent-proxy for this machine
 task check          # gofmt, vet and tests
 task run -- -config /path/to/traefik/dynamic
 task package        # macOS only: "Agent Proxy.app" and agent-proxy-macos.zip
+task run:app        # macOS only: package and open "Agent Proxy.app"
 ```
 
 Without Task:
@@ -97,14 +101,31 @@ go test ./...
 The binary is self contained. The fonts and the app icon are embedded, and
 `FyneApp.toml` holds the bundle name, ID, and version used by `task package`.
 
+### macOS app bundle
+
+`task package` builds a universal binary (Apple Silicon and Intel), wraps it in
+`Agent Proxy.app`, signs it ad hoc and zips it with `ditto`. It needs macOS 13
+or newer, which is what Go 1.27 supports.
+
+Each run increments `Build` in `FyneApp.toml`. Commit that change when you
+release, and discard it after local test builds.
+
+On macOS, Task builds pass `-Wl,-no_warn_duplicate_libraries` to the linker.
+This hides a harmless warning about `-lobjc` being linked twice. Plain
+`go build` still shows it.
+
 ### First launch on macOS
 
-The app is not signed, so Gatekeeper blocks it the first time. Right-click
-`Agent Proxy.app`, choose Open, then Open again. Or clear the quarantine flag:
+The app is signed ad hoc, not with an Apple Developer ID, so Gatekeeper blocks a
+downloaded copy the first time. Open it once, then go to System Settings →
+Privacy & Security and click Open Anyway. Or clear the quarantine flag:
 
 ```sh
 xattr -d com.apple.quarantine "Agent Proxy.app"
 ```
+
+Each rebuild has a new signature, so macOS asks again for access to protected
+folders such as Documents or Desktop.
 
 ## Traefik setup
 
@@ -135,9 +156,11 @@ Proxy at the host side of the bind mount, not the container path.
 ./agent-proxy -config ~/traefik/dynamic
 ```
 
-Flags are only needed the first time. They are saved to
-`~/.config/agent-proxy/settings.json` and can be changed later in the Settings
-dialog.
+Flags are only needed the first time. They are saved to `settings.json` in the
+user config directory, `~/.config/agent-proxy/` on Linux and
+`~/Library/Application Support/agent-proxy/` on macOS, and can be changed later
+in the Settings dialog. `Agent Proxy.app` started from Finder takes no flags
+and asks for the config path on first launch.
 
 | Flag           | Meaning                                                         | Default                 |
 |----------------|-----------------------------------------------------------------|-------------------------|
@@ -196,9 +219,10 @@ main.go        settings, YAML model, Traefik status and the Fyne GUI
 main_test.go   round-trip tests for the YAML model and auth header mapping
 assets/        embedded fonts and icon, Rubik and Fira Mono are under the OFL
 FyneApp.toml   app bundle metadata for fyne package
+tools/         separate Go module pinning the fyne CLI
 docs/          README screenshots
-Taskfile.yml   build, test, check, icon, deps, clean
+Taskfile.yml   build, test, check, run, package, icon, deps, clean
 ```
 
 Regenerate the icon after editing `assets/icon.svg` with `task icon`
-(requires ImageMagick, `brew install imagemagick` on macOS).
+(requires ImageMagick 7, `brew install imagemagick` on macOS).
