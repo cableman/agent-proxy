@@ -1,12 +1,10 @@
 package main
 
 import (
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -16,14 +14,16 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/widget"
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed index.html
-var indexHTML []byte
 
 // ---------- settings ----------
 
@@ -32,11 +32,6 @@ type Settings struct {
 	Traefik     string `json:"traefik"`     // Traefik API base
 	Base        string `json:"base"`        // display-only agent base URL
 	EntryPoints string `json:"entryPoints"` // comma-separated; "" = all (key omitted)
-}
-
-var state struct {
-	sync.Mutex
-	Settings
 }
 
 func settingsPath() string {
@@ -351,13 +346,7 @@ func deleteService(target string, isFile bool, name string) error {
 	return fs.ErrNotExist
 }
 
-// ---------- http ----------
-
-func current() Settings {
-	state.Lock()
-	defer state.Unlock()
-	return state.Settings
-}
+// ---------- traefik ----------
 
 func httpURL(s string) error {
 	u, err := url.Parse(s)
@@ -367,9 +356,163 @@ func httpURL(s string) error {
 	return nil
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+// status returns the status of each @file router; ok=false when Traefik is unreachable.
+func status(api string) (ok bool, routers map[string]string) {
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(strings.TrimRight(api, "/") + "/api/http/routers")
+	if err != nil {
+		return false, nil
+	}
+	defer resp.Body.Close()
+	var list []struct{ Name, Status string }
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return false, nil
+	}
+	routers = map[string]string{}
+	for _, r := range list {
+		if n, ok := strings.CutSuffix(r.Name, "@file"); ok {
+			routers[n] = r.Status
+		}
+	}
+	return true, routers
+}
+
+// ---------- gui ----------
+
+func warn(w fyne.Window, err error) { dialog.ShowError(err, w) }
+
+// form shows a dialog; submit runs on OK and the form reopens (values intact) when it errors. cancel runs when dismissed.
+func form(w fyne.Window, title, note string, items []*widget.FormItem, submit func() error, cancel func()) {
+	if note != "" {
+		l := widget.NewLabel(note)
+		l.Wrapping = fyne.TextWrapWord
+		items = append([]*widget.FormItem{{Widget: l}}, items...)
+	}
+	var show func()
+	show = func() {
+		d := dialog.NewForm(title, "OK", "Cancel", items, func(ok bool) {
+			if !ok {
+				if cancel != nil {
+					cancel()
+				}
+			} else if err := submit(); err != nil {
+				warn(w, err)
+				show()
+			}
+		}, w)
+		d.Resize(fyne.NewSize(640, 0))
+		d.Show()
+	}
+	show()
+}
+
+func parseHeaders(text string) (map[string]string, error) {
+	h := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("header line %q: expected Key: Value", line)
+		}
+		h[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return h, validate(Service{Name: "x", Upstream: "http://x", Headers: h})
+}
+
+func entry(text, placeholder string) *widget.Entry {
+	e := widget.NewEntry()
+	e.SetText(text)
+	e.SetPlaceHolder(placeholder)
+	return e
+}
+
+// editSettings calls done(true) after a valid save, done(false) on cancel.
+func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)) {
+	cfg := entry(s.Config, "dynamic dir, dynamic .yml, or traefik.yml")
+	api, base := entry(s.Traefik, ""), entry(s.Base, "")
+	eps := entry(s.EntryPoints, "comma-separated; empty = all")
+	file := widget.NewButton("File…", func() {
+		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
+			if r != nil {
+				r.Close()
+				cfg.SetText(r.URI().Path())
+			}
+		}, w)
+		d.SetFilter(storage.NewExtensionFileFilter([]string{".yml", ".yaml"}))
+		d.Resize(fyne.NewSize(800, 600))
+		d.Show()
+	})
+	dir := widget.NewButton("Folder…", func() {
+		d := dialog.NewFolderOpen(func(u fyne.ListableURI, _ error) {
+			if u != nil {
+				cfg.SetText(u.Path())
+			}
+		}, w)
+		d.Resize(fyne.NewSize(800, 600))
+		d.Show()
+	})
+	form(w, "Settings", problem, []*widget.FormItem{
+		widget.NewFormItem("Traefik config path", container.NewBorder(nil, nil, nil, container.NewHBox(file, dir), cfg)),
+		widget.NewFormItem("Traefik API URL", api),
+		widget.NewFormItem("Agent base URL (display only)", base),
+		widget.NewFormItem("Entry points", eps),
+	}, func() error {
+		n := Settings{Config: abs(strings.TrimSpace(cfg.Text)), Traefik: strings.TrimSpace(api.Text), Base: strings.TrimSpace(base.Text), EntryPoints: eps.Text}
+		if _, _, err := resolve(n.Config); err != nil {
+			return err
+		}
+		if err := httpURL(n.Traefik); err != nil {
+			return err
+		}
+		if err := httpURL(n.Base); err != nil {
+			return err
+		}
+		*s = n
+		if err := saveSettings(n); err != nil {
+			log.Print(err)
+		}
+		done(true)
+		return nil
+	}, func() { done(false) })
+}
+
+// editService edits old, or creates a new service when old.Name is empty; done gets the save result.
+func editService(w fyne.Window, s Settings, target string, isFile bool, old Service, done func(error)) {
+	name, up := entry(old.Name, "becomes the /name prefix"), entry(old.Upstream, "https://api.github.com")
+	if old.Name != "" {
+		name.Disable()
+	}
+	var lines []string
+	for k, v := range old.Headers {
+		lines = append(lines, k+": "+v)
+	}
+	sort.Strings(lines)
+	hdrs := widget.NewMultiLineEntry()
+	hdrs.SetText(strings.Join(lines, "\n"))
+	hdrs.SetPlaceHolder("one Key: Value per line, e.g.\nAuthorization: Bearer ghp_xxx")
+	hdrs.SetMinRowsVisible(4)
+	title := "New service"
+	if old.Name != "" {
+		title = "Edit " + old.Name
+	}
+	form(w, title, "", []*widget.FormItem{
+		widget.NewFormItem("Name", name),
+		widget.NewFormItem("Upstream URL", up),
+		widget.NewFormItem("Request headers", hdrs),
+	}, func() error {
+		h, err := parseHeaders(hdrs.Text)
+		if err != nil {
+			return err
+		}
+		svc := Service{Name: strings.TrimSpace(name.Text), Upstream: strings.TrimSpace(up.Text), Headers: h}
+		if err := validate(svc); err != nil {
+			return err
+		}
+		done(saveService(target, isFile, svc, entryPoints(s)))
+		return nil
+	}, nil)
 }
 
 func main() {
@@ -378,7 +521,6 @@ func main() {
 		json.Unmarshal(data, &s)
 	}
 	var f Settings
-	listen := flag.String("listen", "127.0.0.1:9000", "address to listen on")
 	flag.StringVar(&f.Config, "config", "", "dynamic-config dir, dynamic-config file, or traefik static yml")
 	flag.StringVar(&f.Traefik, "traefik", "", "Traefik API base URL")
 	flag.StringVar(&f.Base, "base", "", "agent-facing base URL (display only)")
@@ -396,134 +538,135 @@ func main() {
 			s.EntryPoints = f.EntryPoints
 		}
 	})
-	state.Settings = s
 	if err := saveSettings(s); err != nil {
 		log.Print(err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(indexHTML)
-	})
-	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		s := current()
-		target, isFile, err := resolve(s.Config)
-		mode, msg := "dir", ""
+	w := app.New().NewWindow("Agent Proxy")
+	w.Resize(fyne.NewSize(960, 520))
+	cols := []string{"Name", "Status", "Proxy URL", "Upstream", "Headers", "Source"}
+	var rows [][]string
+	sel := -1
+	table := widget.NewTableWithHeaders(
+		func() (int, int) { return len(rows), len(cols) },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.TableCellID, o fyne.CanvasObject) { o.(*widget.Label).SetText(rows[id.Row][id.Col]) },
+	)
+	table.ShowHeaderColumn = false
+	table.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) { o.(*widget.Label).SetText(cols[id.Col]) }
+	table.OnSelected = func(id widget.TableCellID) { sel = id.Row }
+	table.OnUnselected = func(widget.TableCellID) { sel = -1 }
+	msg, conn := widget.NewLabel(""), widget.NewLabel("")
+	flash := func(text string) {
+		msg.SetText(text)
+		time.AfterFunc(8*time.Second, func() {
+			fyne.Do(func() {
+				if msg.Text == text {
+					msg.SetText("")
+				}
+			})
+		})
+	}
+
+	var svcs []Service
+	var target string
+	var isFile bool
+	refresh := func() {
+		var err error
+		if target, isFile, err = resolve(s.Config); err != nil {
+			flash(err.Error())
+			return
+		}
+		if svcs, err = listServices(target, isFile); err != nil {
+			flash(err.Error())
+		}
+		ok, routers := status(s.Traefik)
+		conn.SetText("Traefik unreachable")
+		if ok {
+			conn.SetText("Traefik connected")
+		}
+		mode := "dir"
 		if isFile {
 			mode = "file"
 		}
-		if err != nil {
-			msg = err.Error()
-		}
-		writeJSON(w, map[string]any{"config": s.Config, "traefik": s.Traefik, "base": s.Base,
-			"entryPoints": s.EntryPoints, "resolved": target, "mode": mode, "error": msg})
-	})
-	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		var s Settings
-		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		s.Config = abs(strings.TrimSpace(s.Config))
-		if _, _, err := resolve(s.Config); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		if err := errors.Join(httpURL(s.Traefik), httpURL(s.Base)); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		state.Lock()
-		state.Settings = s
-		state.Unlock()
-		if err := saveSettings(s); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		w.WriteHeader(204)
-	})
-	mux.HandleFunc("GET /api/services", func(w http.ResponseWriter, r *http.Request) {
-		s := current()
-		target, isFile, err := resolve(s.Config)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		svcs, err := listServices(target, isFile)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		if svcs == nil {
-			svcs = []Service{}
-		}
-		writeJSON(w, map[string]any{"base": s.Base, "services": svcs})
-	})
-	mux.HandleFunc("PUT /api/services/{name}", func(w http.ResponseWriter, r *http.Request) {
-		var svc Service
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&svc); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		svc.Name = r.PathValue("name")
-		if err := validate(svc); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		s := current()
-		target, isFile, err := resolve(s.Config)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		if err := saveService(target, isFile, svc, entryPoints(s)); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		w.WriteHeader(204)
-	})
-	mux.HandleFunc("DELETE /api/services/{name}", func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
-		if !nameRe.MatchString(name) {
-			http.Error(w, "name: must match ^[a-z0-9][a-z0-9-]{0,63}$", 400)
-			return
-		}
-		target, isFile, err := resolve(current().Config)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		switch err := deleteService(target, isFile, name); {
-		case errors.Is(err, fs.ErrNotExist):
-			http.Error(w, "not found", 404)
-		case err != nil:
-			http.Error(w, err.Error(), 500)
-		default:
-			w.WriteHeader(204)
-		}
-	})
-	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		routers := map[string]string{}
-		client := http.Client{Timeout: 2 * time.Second}
-		resp, err := client.Get(strings.TrimRight(current().Traefik, "/") + "/api/http/routers")
-		if err != nil {
-			writeJSON(w, map[string]any{"traefik": false, "routers": routers})
-			return
-		}
-		defer resp.Body.Close()
-		var list []struct{ Name, Status string }
-		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-			writeJSON(w, map[string]any{"traefik": false, "routers": routers})
-			return
-		}
-		for _, r := range list {
-			if n, ok := strings.CutSuffix(r.Name, "@file"); ok {
-				routers[n] = r.Status
+		w.SetTitle(fmt.Sprintf("Agent Proxy — %s (%s)", target, mode))
+		base := strings.TrimRight(s.Base, "/")
+		rows = make([][]string, len(svcs))
+		for i, v := range svcs {
+			rows[i] = []string{v.Name, "unmanaged", "", "", "", v.Source}
+			if v.Managed {
+				st := routers[v.Name]
+				if st == "" {
+					st = "unknown"
+				}
+				rows[i][1], rows[i][2], rows[i][3], rows[i][4] = st, base+"/"+v.Name+"/", v.Upstream, fmt.Sprint(len(v.Headers))
 			}
 		}
-		writeJSON(w, map[string]any{"traefik": true, "routers": routers})
-	})
-	log.Printf("agent-proxy listening on http://%s (config: %q)", *listen, s.Config)
-	log.Fatal(http.ListenAndServe(*listen, mux))
+		for c, name := range cols {
+			width := widget.NewLabel(name).MinSize().Width
+			for _, r := range rows {
+				width = max(width, widget.NewLabel(r[c]).MinSize().Width)
+			}
+			table.SetColumnWidth(c, width)
+		}
+		table.Refresh()
+	}
+	selected := func() (Service, bool) {
+		if sel < 0 || sel >= len(svcs) {
+			flash("select a service first")
+			return Service{}, false
+		}
+		if !svcs[sel].Managed {
+			flash(svcs[sel].Name + " is not in agent-proxy shape; edit it by hand")
+			return Service{}, false
+		}
+		return svcs[sel], true
+	}
+	report := func(err error) {
+		if err != nil {
+			warn(w, err)
+		}
+		refresh()
+	}
+
+	buttons := container.NewHBox(
+		widget.NewButton("New", func() { editService(w, s, target, isFile, Service{}, report) }),
+		widget.NewButton("Edit", func() {
+			if svc, ok := selected(); ok {
+				editService(w, s, target, isFile, svc, report)
+			}
+		}),
+		widget.NewButton("Delete", func() {
+			svc, ok := selected()
+			if !ok {
+				return
+			}
+			dialog.ShowConfirm("Delete", fmt.Sprintf("Delete service %q?", svc.Name), func(yes bool) {
+				if yes {
+					report(deleteService(target, isFile, svc.Name))
+				}
+			}, w)
+		}),
+		widget.NewButton("Refresh", refresh),
+		widget.NewButton("Settings", func() {
+			editSettings(w, &s, "", func(ok bool) {
+				if ok {
+					refresh()
+				}
+			})
+		}),
+	)
+	w.SetContent(container.NewBorder(buttons, container.NewBorder(nil, nil, nil, conn, msg), nil, nil, table))
+	if _, _, err := resolve(s.Config); err != nil {
+		editSettings(w, &s, err.Error(), func(ok bool) {
+			if ok {
+				refresh()
+			} else {
+				w.Close()
+			}
+		})
+	} else {
+		refresh()
+	}
+	w.ShowAndRun()
 }
