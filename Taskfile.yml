@@ -1,0 +1,58 @@
+version: '3'
+
+vars:
+  BIN: agent-proxy
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  deps:
+    desc: Install build prerequisites (Debian/Ubuntu)
+    cmds:
+      - sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
+
+  build:
+    desc: Build the binary
+    sources:
+      - '*.go'
+      - go.mod
+      - go.sum
+      - assets/*
+    generates:
+      - '{{.BIN}}'
+    cmds:
+      - go build -o {{.BIN}} .
+
+  run:
+    desc: Build and start the app (pass flags after --, e.g. task run -- -config ./dynamic)
+    deps: [build]
+    cmds:
+      - ./{{.BIN}} {{.CLI_ARGS}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test ./...
+
+  check:
+    desc: gofmt, vet and tests
+    cmds:
+      - 'test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files need formatting"; exit 1; }'
+      - go vet ./...
+      - go test ./...
+
+  icon:
+    desc: Regenerate assets/icon.png from assets/icon.svg (needs ImageMagick)
+    sources:
+      - assets/icon.svg
+    generates:
+      - assets/icon.png
+    cmds:
+      - convert -background none -density 96 assets/icon.svg -resize 256x256 -depth 8 PNG32:assets/icon.png
+
+  clean:
+    desc: Remove build output
+    cmds:
+      - rm -f {{.BIN}}
