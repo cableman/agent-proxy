@@ -1,10 +1,13 @@
 package main
 
 import (
+	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"image/color"
 	"io/fs"
 	"log"
 	"net/http"
@@ -18,9 +21,12 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"gopkg.in/yaml.v3"
 )
@@ -379,18 +385,163 @@ func status(api string) (ok bool, routers map[string]string) {
 
 // ---------- gui ----------
 
+//go:embed assets/icon.png
+var iconPNG []byte
+
+//go:embed assets/Rubik-Regular.ttf
+var rubik []byte
+
+//go:embed assets/Rubik-Medium.ttf
+var rubikMedium []byte
+
+// look follows the Traefik dashboard (Faency, light, blue primary): Rubik type, Radix blue, navy header.
+type look struct{ fyne.Theme }
+
+func hex(v uint32) color.Color {
+	return color.NRGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xFF}
+}
+
+var (
+	navy      = hex(0x031828) // faency deepBlue11
+	navyMuted = hex(0xC3CFDA) // faency deepBlue6
+)
+
+var palette = map[fyne.ThemeColorName]color.Color{
+	theme.ColorNameBackground:        hex(0xF4F5F6), // grayBlue2
+	theme.ColorNameForeground:        hex(0x1E2124), // grayBlue12
+	theme.ColorNamePrimary:           hex(0x0091FF), // radix blue9
+	theme.ColorNameFocus:             color.NRGBA{R: 0x00, G: 0x91, B: 0xFF, A: 0x66},
+	theme.ColorNameSelection:         hex(0xE1F0FF), // blue4
+	theme.ColorNameHover:             hex(0xF0F2F3), // grayBlue4
+	theme.ColorNamePressed:           hex(0xCEE7FE), // blue5
+	theme.ColorNameButton:            hex(0xFFFFFF),
+	theme.ColorNameInputBackground:   hex(0xFFFFFF),
+	theme.ColorNameInputBorder:       hex(0xD0D5D8), // grayBlue7
+	theme.ColorNameSeparator:         hex(0xE2E5E7), // grayBlue6
+	theme.ColorNameHeaderBackground:  hex(0xF3F4F5), // grayBlue3
+	theme.ColorNameOverlayBackground: hex(0xFFFFFF),
+	theme.ColorNameMenuBackground:    hex(0xFFFFFF),
+	theme.ColorNamePlaceHolder:       hex(0x7C8892), // grayBlue10
+	theme.ColorNameDisabled:          hex(0x7C8892),
+	theme.ColorNameSuccess:           hex(0x30A46C), // radix green9
+	theme.ColorNameWarning:           hex(0xF7680A), // faency orange9
+	theme.ColorNameError:             hex(0xFF3366), // faency red9
+}
+
+var fonts = map[string]fyne.Resource{
+	"regular": fyne.NewStaticResource("Rubik-Regular.ttf", rubik),
+	"bold":    fyne.NewStaticResource("Rubik-Medium.ttf", rubikMedium),
+}
+
+func (l look) Color(n fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
+	if c, ok := palette[n]; ok {
+		return c
+	}
+	return l.Theme.Color(n, theme.VariantLight)
+}
+
+func (l look) Font(st fyne.TextStyle) fyne.Resource {
+	name := "regular"
+	switch {
+	case st.Monospace:
+		name = "mono"
+	case st.Bold:
+		name = "bold"
+	}
+	if f, ok := fonts[name]; ok {
+		return f
+	}
+	return l.Theme.Font(st)
+}
+
+func (l look) Size(n fyne.ThemeSizeName) float32 {
+	if n == theme.SizeNamePadding {
+		return 6
+	}
+	return l.Theme.Size(n)
+}
+
+// loadFonts picks up a system monospace for URLs; Fyne's default mono is the fallback.
+func loadFonts() {
+	if b, err := os.ReadFile("/usr/share/fonts/opentype/fira/FiraMono-Regular.otf"); err == nil {
+		fonts["mono"] = fyne.NewStaticResource("FiraMono-Regular.otf", b)
+	}
+}
+
+// cols lays children out in fixed-width columns; a 0 width takes the remaining space.
+type cols []float32
+
+func (c cols) MinSize(objs []fyne.CanvasObject) fyne.Size {
+	var w, h float32
+	for i, o := range objs {
+		w += max(c[i], o.MinSize().Width)
+		h = max(h, o.MinSize().Height)
+	}
+	return fyne.NewSize(w, h)
+}
+
+func (c cols) Layout(objs []fyne.CanvasObject, size fyne.Size) {
+	var x, fixed float32
+	for _, w := range c {
+		fixed += w
+	}
+	for i, o := range objs {
+		w := c[i]
+		if w == 0 {
+			w = size.Width - fixed
+		}
+		o.Resize(fyne.NewSize(w, size.Height))
+		o.Move(fyne.NewPos(x, 0))
+		x += w
+	}
+}
+
+// clickRow is a list row that reports double clicks; single taps still select through the list.
+type clickRow struct {
+	widget.BaseWidget
+	content  *fyne.Container
+	onDouble func()
+}
+
+func newClickRow(c *fyne.Container) *clickRow {
+	r := &clickRow{content: c}
+	r.ExtendBaseWidget(r)
+	return r
+}
+
+func (r *clickRow) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(r.content) }
+
+func (r *clickRow) DoubleTapped(*fyne.PointEvent) {
+	if r.onDouble != nil {
+		r.onDouble()
+	}
+}
+
+func label(text string, st fyne.TextStyle) *widget.Label {
+	l := widget.NewLabel(text)
+	l.TextStyle = st
+	return l
+}
+
+func dot(c color.Color) fyne.CanvasObject {
+	return container.NewCenter(container.New(layout.NewGridWrapLayout(fyne.NewSize(10, 10)), canvas.NewCircle(c)))
+}
+
 func warn(w fyne.Window, err error) { dialog.ShowError(err, w) }
 
-// form shows a dialog; submit runs on OK and the form reopens (values intact) when it errors. cancel runs when dismissed.
-func form(w fyne.Window, title, note string, items []*widget.FormItem, submit func() error, cancel func()) {
+// form shows a dialog; submit runs on Save and the form reopens (values intact) when it errors. cancel runs when dismissed.
+// The returned func re-fits the dialog after its content grows or shrinks.
+func form(w fyne.Window, title, note string, items []*widget.FormItem, submit func() error, cancel func()) func() {
 	if note != "" {
 		l := widget.NewLabel(note)
 		l.Wrapping = fyne.TextWrapWord
 		items = append([]*widget.FormItem{{Widget: l}}, items...)
 	}
+	var cur dialog.Dialog
+	fit := func() { cur.Resize(fyne.NewSize(680, 0)) }
 	var show func()
 	show = func() {
-		d := dialog.NewForm(title, "OK", "Cancel", items, func(ok bool) {
+		cur = dialog.NewForm(title, "Save", "Cancel", items, func(ok bool) {
 			if !ok {
 				if cancel != nil {
 					cancel()
@@ -400,25 +551,77 @@ func form(w fyne.Window, title, note string, items []*widget.FormItem, submit fu
 				show()
 			}
 		}, w)
-		d.Resize(fyne.NewSize(640, 0))
-		d.Show()
+		fit()
+		cur.Show()
 	}
 	show()
+	return fit
 }
 
-func parseHeaders(text string) (map[string]string, error) {
-	h := map[string]string{}
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			return nil, fmt.Errorf("header line %q: expected Key: Value", line)
-		}
-		h[strings.TrimSpace(k)] = strings.TrimSpace(v)
+// Auth kinds that fold into one static header; Traefik cannot sign requests, so signed schemes are out.
+const (
+	noAuth = "No auth"
+	bearer = "Bearer token"
+	basic  = "Basic auth"
+	apiKey = "API key"
+)
+
+// splitAuth pulls the auth header out of h: Authorization (Bearer or Basic) or X-API-Key.
+// Other headers, including unrecognised Authorization values, come back in rest for the plain list.
+func splitAuth(h map[string]string) (kind, name, user, secret string, rest map[string]string) {
+	rest = map[string]string{}
+	for k, v := range h {
+		rest[k] = v
 	}
-	return h, validate(Service{Name: "x", Upstream: "http://x", Headers: h})
+	if v, ok := rest["Authorization"]; ok {
+		if t, ok := strings.CutPrefix(v, "Bearer "); ok {
+			delete(rest, "Authorization")
+			return bearer, "", "", t, rest
+		}
+		if b, ok := strings.CutPrefix(v, "Basic "); ok {
+			if dec, err := base64.StdEncoding.DecodeString(b); err == nil {
+				delete(rest, "Authorization")
+				u, p, _ := strings.Cut(string(dec), ":")
+				return basic, "", u, p, rest
+			}
+		}
+	}
+	if v, ok := rest["X-API-Key"]; ok {
+		delete(rest, "X-API-Key")
+		return apiKey, "X-API-Key", "", v, rest
+	}
+	return noAuth, "", "", "", rest
+}
+
+// joinAuth is the inverse of splitAuth: adds the auth header for kind to h.
+func joinAuth(h map[string]string, kind, name, user, secret string) error {
+	switch kind {
+	case bearer:
+		if secret == "" {
+			return errors.New("bearer token is required")
+		}
+		h["Authorization"] = "Bearer " + secret
+	case basic:
+		if user == "" {
+			return errors.New("basic auth username is required")
+		}
+		h["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+secret))
+	case apiKey:
+		if strings.TrimSpace(name) == "" {
+			return errors.New("auth header name is required")
+		}
+		h[strings.TrimSpace(name)] = secret
+	}
+	return nil
+}
+
+func fields(pairs ...any) fyne.CanvasObject {
+	f := container.New(layout.NewFormLayout())
+	for i := 0; i < len(pairs); i += 2 {
+		f.Add(widget.NewLabel(pairs[i].(string)))
+		f.Add(pairs[i+1].(fyne.CanvasObject))
+	}
+	return f
 }
 
 func entry(text, placeholder string) *widget.Entry {
@@ -433,7 +636,7 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 	cfg := entry(s.Config, "dynamic dir, dynamic .yml, or traefik.yml")
 	api, base := entry(s.Traefik, ""), entry(s.Base, "")
 	eps := entry(s.EntryPoints, "comma-separated; empty = all")
-	file := widget.NewButton("File…", func() {
+	file := widget.NewButton("Choose file", func() {
 		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
 				r.Close()
@@ -444,7 +647,7 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 		d.Resize(fyne.NewSize(800, 600))
 		d.Show()
 	})
-	dir := widget.NewButton("Folder…", func() {
+	dir := widget.NewButton("Choose folder", func() {
 		d := dialog.NewFolderOpen(func(u fyne.ListableURI, _ error) {
 			if u != nil {
 				cfg.SetText(u.Path())
@@ -454,9 +657,9 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 		d.Show()
 	})
 	form(w, "Settings", problem, []*widget.FormItem{
-		widget.NewFormItem("Traefik config path", container.NewBorder(nil, nil, nil, container.NewHBox(file, dir), cfg)),
-		widget.NewFormItem("Traefik API URL", api),
-		widget.NewFormItem("Agent base URL (display only)", base),
+		widget.NewFormItem("Traefik config", container.NewBorder(nil, nil, nil, container.NewHBox(file, dir), cfg)),
+		widget.NewFormItem("Traefik API", api),
+		widget.NewFormItem("Agents call", base),
 		widget.NewFormItem("Entry points", eps),
 	}, func() error {
 		n := Settings{Config: abs(strings.TrimSpace(cfg.Text)), Traefik: strings.TrimSpace(api.Text), Base: strings.TrimSpace(base.Text), EntryPoints: eps.Text}
@@ -484,26 +687,79 @@ func editService(w fyne.Window, s Settings, target string, isFile bool, old Serv
 	if old.Name != "" {
 		name.Disable()
 	}
-	var lines []string
-	for k, v := range old.Headers {
-		lines = append(lines, k+": "+v)
+	fit := func() {}
+
+	// Auth section: one dropdown, fields swap with the kind.
+	kind, hname, user, secret, rest := splitAuth(old.Headers)
+	hdr, userE := entry(hname, "Header name"), entry(user, "")
+	secretE := widget.NewPasswordEntry()
+	secretE.SetText(secret)
+	authFields := container.NewVBox()
+	auth := widget.NewSelect([]string{noAuth, bearer, basic, apiKey}, func(k string) {
+		authFields.Objects = nil
+		switch k {
+		case bearer:
+			authFields.Add(fields("Token", secretE))
+		case basic:
+			authFields.Add(fields("Username", userE, "Password", secretE))
+		case apiKey:
+			if hdr.Text == "" {
+				hdr.SetText("X-API-Key")
+			}
+			authFields.Add(fields("Header", hdr, "Key", secretE))
+		}
+		authFields.Refresh()
+		fit()
+	})
+	auth.SetSelected(kind)
+
+	// Header list: one row per header, remove per row, add at the bottom.
+	rows := container.NewVBox()
+	rowEntries := map[fyne.CanvasObject][2]*widget.Entry{}
+	addRow := func(k, v string) {
+		kE, vE := entry(k, "Header name"), entry(v, "Value")
+		var row fyne.CanvasObject
+		rm := widget.NewButtonWithIcon("", theme.ContentRemoveIcon(), func() {
+			rows.Remove(row)
+			delete(rowEntries, row)
+			fit()
+		})
+		row = container.NewBorder(nil, nil, nil, rm, container.NewGridWithColumns(2, kE, vE))
+		rowEntries[row] = [2]*widget.Entry{kE, vE}
+		rows.Add(row)
+		fit()
 	}
-	sort.Strings(lines)
-	hdrs := widget.NewMultiLineEntry()
-	hdrs.SetText(strings.Join(lines, "\n"))
-	hdrs.SetPlaceHolder("one Key: Value per line, e.g.\nAuthorization: Bearer ghp_xxx")
-	hdrs.SetMinRowsVisible(4)
-	title := "New service"
+	keys := make([]string, 0, len(rest))
+	for k := range rest {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		addRow(k, rest[k])
+	}
+	addBtn := widget.NewButtonWithIcon("Add header", theme.ContentAddIcon(), func() { addRow("", "") })
+
+	title := "Add service"
 	if old.Name != "" {
 		title = "Edit " + old.Name
 	}
-	form(w, title, "", []*widget.FormItem{
+	fit = form(w, title, "", []*widget.FormItem{
 		widget.NewFormItem("Name", name),
-		widget.NewFormItem("Upstream URL", up),
-		widget.NewFormItem("Request headers", hdrs),
+		widget.NewFormItem("Upstream", up),
+		widget.NewFormItem("Auth", auth),
+		widget.NewFormItem("", authFields),
+		widget.NewFormItem("Other headers", container.NewVBox(rows, container.NewHBox(addBtn))),
 	}, func() error {
-		h, err := parseHeaders(hdrs.Text)
-		if err != nil {
+		h := map[string]string{}
+		for _, row := range rows.Objects {
+			e := rowEntries[row]
+			k := strings.TrimSpace(e[0].Text)
+			if k == "" && strings.TrimSpace(e[1].Text) == "" {
+				continue
+			}
+			h[k] = e[1].Text
+		}
+		if err := joinAuth(h, auth.Selected, hdr.Text, userE.Text, secretE.Text); err != nil {
 			return err
 		}
 		svc := Service{Name: strings.TrimSpace(name.Text), Upstream: strings.TrimSpace(up.Text), Headers: h}
@@ -542,21 +798,69 @@ func main() {
 		log.Print(err)
 	}
 
-	w := app.New().NewWindow("Agent Proxy")
-	w.Resize(fyne.NewSize(960, 520))
-	cols := []string{"Name", "Status", "Proxy URL", "Upstream", "Headers", "Source"}
-	var rows [][]string
-	sel := -1
-	table := widget.NewTableWithHeaders(
-		func() (int, int) { return len(rows), len(cols) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(id widget.TableCellID, o fyne.CanvasObject) { o.(*widget.Label).SetText(rows[id.Row][id.Col]) },
+	loadFonts()
+	a := app.New()
+	a.Settings().SetTheme(look{theme.DefaultTheme()})
+	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))
+	w := a.NewWindow("Agent Proxy")
+	w.Resize(fyne.NewSize(1000, 560))
+
+	// Row columns: dot, name, proxy URL, arrow, upstream, status, headers, delete. Widths are measured in refresh.
+	mono, bold := fyne.TextStyle{Monospace: true}, fyne.TextStyle{Bold: true}
+	widths := cols{24, 0, 0, 0, 0, 0, 0, 40}
+	type row struct {
+		svc    Service
+		status string
+		proxy  string
+	}
+	var rows []row
+	var edit, del func(Service)
+	list := widget.NewList(
+		func() int { return len(rows) },
+		func() fyne.CanvasObject {
+			rm := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
+			rm.Importance = widget.LowImportance
+			return newClickRow(container.New(widths, dot(color.Transparent), label("", bold), label("", mono), widget.NewLabel("→"), label("", mono), widget.NewLabel(""), widget.NewLabel(""), rm))
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			r, cr := rows[i], o.(*clickRow)
+			objs := cr.content.Objects
+			cr.onDouble = func() { edit(r.svc) }
+			rm := objs[7].(*widget.Button)
+			rm.OnTapped = func() { del(r.svc) }
+			rm.Hidden = !r.svc.Managed
+			c := objs[0].(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
+			c.FillColor = map[string]color.Color{"enabled": palette[theme.ColorNameSuccess], "unmanaged": palette[theme.ColorNameDisabled]}[r.status]
+			if c.FillColor == nil {
+				c.FillColor = palette[theme.ColorNameWarning]
+			}
+			c.Refresh()
+			n := len(r.svc.Headers)
+			texts := []string{"", r.svc.Name, r.proxy, "→", r.svc.Upstream, r.status, fmt.Sprintf("%d headers", n)}
+			if n == 1 {
+				texts[6] = "1 header"
+			}
+			note := objs[2].(*widget.Label)
+			note.TextStyle = mono
+			if !r.svc.Managed {
+				note.TextStyle = fyne.TextStyle{}
+				texts = []string{"", r.svc.Name, "not managed by Agent Proxy (" + r.svc.Source + ")", "", "", "", ""}
+			}
+			for i := 1; i < len(texts); i++ {
+				objs[i].(*widget.Label).SetText(texts[i])
+			}
+		},
 	)
-	table.ShowHeaderColumn = false
-	table.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) { o.(*widget.Label).SetText(cols[id.Col]) }
-	table.OnSelected = func(id widget.TableCellID) { sel = id.Row }
-	table.OnUnselected = func(widget.TableCellID) { sel = -1 }
-	msg, conn := widget.NewLabel(""), widget.NewLabel("")
+	head := container.New(widths, widget.NewLabel(""), label("Service", bold), label("Agents call", bold), widget.NewLabel(""), label("Upstream", bold), label("Status", bold), label("Headers", bold), widget.NewLabel(""))
+	empty := widget.NewLabel("No services yet. Add one to give agents a proxied path to an upstream API.")
+	empty.Alignment = fyne.TextAlignCenter
+
+	title, where, conn := canvas.NewText("Agent Proxy", color.White), canvas.NewText("", navyMuted), canvas.NewText("", color.White)
+	title.TextStyle, title.TextSize, where.TextStyle = bold, 20, mono
+	connDot := dot(color.Transparent)
+	header := container.NewStack(canvas.NewRectangle(navy), container.NewPadded(container.NewPadded(container.NewBorder(nil, nil,
+		container.NewHBox(container.NewCenter(title), container.NewCenter(where)), container.NewHBox(connDot, container.NewCenter(conn))))))
+	msg := widget.NewLabel("")
 	flash := func(text string) {
 		msg.SetText(text)
 		time.AfterFunc(8*time.Second, func() {
@@ -581,46 +885,51 @@ func main() {
 			flash(err.Error())
 		}
 		ok, routers := status(s.Traefik)
-		conn.SetText("Traefik unreachable")
+		c := connDot.(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
+		c.FillColor, conn.Text = palette[theme.ColorNameDisabled], "Traefik unreachable"
 		if ok {
-			conn.SetText("Traefik connected")
+			c.FillColor, conn.Text = palette[theme.ColorNameSuccess], "Traefik connected"
 		}
-		mode := "dir"
-		if isFile {
-			mode = "file"
-		}
-		w.SetTitle(fmt.Sprintf("Agent Proxy — %s (%s)", target, mode))
+		c.Refresh()
+		conn.Refresh()
+		where.Text = target
+		where.Refresh()
 		base := strings.TrimRight(s.Base, "/")
-		rows = make([][]string, len(svcs))
-		for i, v := range svcs {
-			rows[i] = []string{v.Name, "unmanaged", "", "", "", v.Source}
+		rows = rows[:0]
+		for _, v := range svcs {
+			r := row{svc: v, status: "unmanaged"}
 			if v.Managed {
-				st := routers[v.Name]
-				if st == "" {
-					st = "unknown"
+				r.proxy = base + "/" + v.Name + "/"
+				if r.status = routers[v.Name]; r.status == "" {
+					r.status = "unknown"
 				}
-				rows[i][1], rows[i][2], rows[i][3], rows[i][4] = st, base+"/"+v.Name+"/", v.Upstream, fmt.Sprint(len(v.Headers))
 			}
+			rows = append(rows, r)
 		}
-		for c, name := range cols {
-			width := widget.NewLabel(name).MinSize().Width
-			for _, r := range rows {
-				width = max(width, widget.NewLabel(r[c]).MinSize().Width)
+		measure := func(st fyne.TextStyle, texts ...string) float32 {
+			var w float32
+			for _, t := range texts {
+				w = max(w, label(t, st).MinSize().Width)
 			}
-			table.SetColumnWidth(c, width)
+			return w
 		}
-		table.Refresh()
-	}
-	selected := func() (Service, bool) {
-		if sel < 0 || sel >= len(svcs) {
-			flash("select a service first")
-			return Service{}, false
+		for i, r := range rows {
+			if i == 0 {
+				widths[1], widths[2], widths[4], widths[5] = measure(bold, "Service"), measure(bold, "Agents call"), measure(bold, "Upstream"), measure(bold, "Status")
+			}
+			widths[1] = max(widths[1], measure(bold, r.svc.Name))
+			widths[2] = max(widths[2], measure(mono, r.proxy))
+			widths[4] = max(widths[4], measure(mono, r.svc.Upstream))
+			widths[5] = max(widths[5], measure(fyne.TextStyle{}, r.status))
 		}
-		if !svcs[sel].Managed {
-			flash(svcs[sel].Name + " is not in agent-proxy shape; edit it by hand")
-			return Service{}, false
+		widths[3] = measure(fyne.TextStyle{}, "→")
+		if len(rows) == 0 {
+			empty.Show()
+		} else {
+			empty.Hide()
 		}
-		return svcs[sel], true
+		head.Refresh()
+		list.Refresh()
 	}
 	report := func(err error) {
 		if err != nil {
@@ -628,25 +937,26 @@ func main() {
 		}
 		refresh()
 	}
+	edit = func(svc Service) {
+		if !svc.Managed {
+			flash(svc.Name + " was not created by Agent Proxy; edit its YAML by hand")
+			return
+		}
+		editService(w, s, target, isFile, svc, report)
+	}
+	del = func(svc Service) {
+		dialog.ShowConfirm("Delete service", fmt.Sprintf("Delete %s? Agents will no longer reach it through the proxy.", svc.Name), func(yes bool) {
+			if yes {
+				report(deleteService(target, isFile, svc.Name))
+			}
+		}, w)
+	}
 
+	add := widget.NewButton("Add service", func() { editService(w, s, target, isFile, Service{}, report) })
+	add.Importance = widget.HighImportance
 	buttons := container.NewHBox(
-		widget.NewButton("New", func() { editService(w, s, target, isFile, Service{}, report) }),
-		widget.NewButton("Edit", func() {
-			if svc, ok := selected(); ok {
-				editService(w, s, target, isFile, svc, report)
-			}
-		}),
-		widget.NewButton("Delete", func() {
-			svc, ok := selected()
-			if !ok {
-				return
-			}
-			dialog.ShowConfirm("Delete", fmt.Sprintf("Delete service %q?", svc.Name), func(yes bool) {
-				if yes {
-					report(deleteService(target, isFile, svc.Name))
-				}
-			}, w)
-		}),
+		add,
+		layout.NewSpacer(),
 		widget.NewButton("Refresh", refresh),
 		widget.NewButton("Settings", func() {
 			editSettings(w, &s, "", func(ok bool) {
@@ -656,7 +966,8 @@ func main() {
 			})
 		}),
 	)
-	w.SetContent(container.NewBorder(buttons, container.NewBorder(nil, nil, nil, conn, msg), nil, nil, table))
+	body := container.NewBorder(container.NewVBox(buttons, head, widget.NewSeparator()), nil, nil, nil, container.NewStack(list, empty))
+	w.SetContent(container.NewBorder(header, container.NewPadded(msg), nil, nil, container.NewPadded(body)))
 	if _, _, err := resolve(s.Config); err != nil {
 		editSettings(w, &s, err.Error(), func(ok bool) {
 			if ok {

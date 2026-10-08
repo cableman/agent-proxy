@@ -68,3 +68,24 @@ func TestDocRoundTrip(t *testing.T) {
 		t.Fatal("missing path must error")
 	}
 }
+
+func TestAuthRoundTrip(t *testing.T) {
+	for _, h := range []map[string]string{
+		{"Authorization": "Bearer tok", "Accept": "json"},
+		{"Authorization": "Basic " + "dXNlcjpwYXNz"},
+		{"Authorization": "Digest abc"},
+		{"X-API-Key": "k"},
+		{"Accept": "json"},
+	} {
+		kind, name, user, secret, rest := splitAuth(h)
+		if err := joinAuth(rest, kind, name, user, secret); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(rest, h) {
+			t.Fatalf("%v: got %v via %s", h, rest, kind)
+		}
+	}
+	if _, _, _, s, _ := splitAuth(map[string]string{"Authorization": "Basic dXNlcjpwYXNz"}); s != "pass" {
+		t.Fatalf("basic password: %q", s)
+	}
+}
