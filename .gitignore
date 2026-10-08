@@ -1,2 +1,4 @@
 agent-proxy
 .task/
+*.app/
+*.zip

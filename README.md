@@ -48,12 +48,13 @@ Traefik picks the file up on its own. A request to
 ## Requirements
 
 - Go 1.27 or newer
-- A C compiler and the X11 and OpenGL development headers (the GUI is built with
-  [Fyne](https://fyne.io/))
+- A C compiler, since the GUI is built with [Fyne](https://fyne.io/)
 - [Task](https://taskfile.dev/) is optional but used in the examples below
 - Traefik with the file provider and the API enabled, see below
 
-On Debian or Ubuntu the headers can be installed with:
+### Linux
+
+Debian or Ubuntu need the X11 and OpenGL headers:
 
 ```sh
 task deps
@@ -66,12 +67,24 @@ sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev \
   libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
 ```
 
+### macOS
+
+```sh
+xcode-select --install          # clang
+brew install go go-task         # Go and Task
+task deps                       # installs the fyne CLI used for packaging
+```
+
+Builds must be done on a Mac. Cross compiling from Linux needs the macOS SDK,
+which Apple's licence only allows on Apple hardware.
+
 ## Build
 
 ```sh
 task build          # produces ./agent-proxy
 task check          # gofmt, vet and tests
 task run -- -config /path/to/traefik/dynamic
+task package        # macOS only: "Agent Proxy.app" and agent-proxy-macos.zip
 ```
 
 Without Task:
@@ -81,7 +94,17 @@ go build -o agent-proxy .
 go test ./...
 ```
 
-The binary is self contained. The Rubik typeface and the app icon are embedded.
+The binary is self contained. The fonts and the app icon are embedded, and
+`FyneApp.toml` holds the bundle name, ID, and version used by `task package`.
+
+### First launch on macOS
+
+The app is not signed, so Gatekeeper blocks it the first time. Right-click
+`Agent Proxy.app`, choose Open, then Open again. Or clear the quarantine flag:
+
+```sh
+xattr -d com.apple.quarantine "Agent Proxy.app"
+```
 
 ## Traefik setup
 
@@ -103,8 +126,8 @@ providers:
     watch: true
 ```
 
-When Traefik runs in Docker, point Agent Proxy at the host side of the bind
-mount, not the container path.
+When Traefik runs in Docker, including Docker Desktop on macOS, point Agent
+Proxy at the host side of the bind mount, not the container path.
 
 ## Usage
 
@@ -171,10 +194,11 @@ the config directory private.
 ```
 main.go        settings, YAML model, Traefik status and the Fyne GUI
 main_test.go   round-trip tests for the YAML model and auth header mapping
-assets/        embedded fonts and icon, Rubik is under the OFL
+assets/        embedded fonts and icon, Rubik and Fira Mono are under the OFL
+FyneApp.toml   app bundle metadata for fyne package
 docs/          README screenshots
 Taskfile.yml   build, test, check, icon, deps, clean
 ```
 
 Regenerate the icon after editing `assets/icon.svg` with `task icon`
-(requires ImageMagick).
+(requires ImageMagick, `brew install imagemagick` on macOS).

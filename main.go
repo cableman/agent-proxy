@@ -414,6 +414,9 @@ var rubik []byte
 //go:embed assets/Rubik-Medium.ttf
 var rubikMedium []byte
 
+//go:embed assets/FiraMono-Regular.otf
+var firaMono []byte
+
 // look follows the Traefik dashboard (Faency, light, blue primary): Rubik type, Radix blue, navy header.
 type look struct{ fyne.Theme }
 
@@ -451,6 +454,7 @@ var palette = map[fyne.ThemeColorName]color.Color{
 var fonts = map[string]fyne.Resource{
 	"regular": fyne.NewStaticResource("Rubik-Regular.ttf", rubik),
 	"bold":    fyne.NewStaticResource("Rubik-Medium.ttf", rubikMedium),
+	"mono":    fyne.NewStaticResource("FiraMono-Regular.otf", firaMono),
 }
 
 func (l look) Color(n fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
@@ -479,13 +483,6 @@ func (l look) Size(n fyne.ThemeSizeName) float32 {
 		return 6
 	}
 	return l.Theme.Size(n)
-}
-
-// loadFonts picks up a system monospace for URLs; Fyne's default mono is the fallback.
-func loadFonts() {
-	if b, err := os.ReadFile("/usr/share/fonts/opentype/fira/FiraMono-Regular.otf"); err == nil {
-		fonts["mono"] = fyne.NewStaticResource("FiraMono-Regular.otf", b)
-	}
 }
 
 // cols lays children out in fixed-width columns; a 0 width takes the remaining space.
@@ -818,7 +815,6 @@ func main() {
 		log.Print(err)
 	}
 
-	loadFonts()
 	a := app.New()
 	a.Settings().SetTheme(look{theme.DefaultTheme()})
 	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))

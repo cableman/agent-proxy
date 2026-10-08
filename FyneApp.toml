@@ -1,0 +1,6 @@
+[Details]
+Icon = "assets/icon.png"
+Name = "Agent Proxy"
+ID = "dk.aarhus.agent-proxy"
+Version = "0.1.0"
+Build = 1

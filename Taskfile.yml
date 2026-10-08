@@ -9,9 +9,14 @@ tasks:
       - task --list
 
   deps:
-    desc: Install build prerequisites (Debian/Ubuntu)
+    desc: Install build prerequisites (Debian/Ubuntu or macOS)
     cmds:
-      - sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
+      - cmd: sudo apt install -y gcc libgl1-mesa-dev libxxf86vm-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxkbcommon-dev
+        platforms: [linux]
+      - cmd: xcode-select --install || true
+        platforms: [darwin]
+      - cmd: go install fyne.io/tools/cmd/fyne@latest
+        platforms: [darwin]
 
   build:
     desc: Build the binary
@@ -52,7 +57,15 @@ tasks:
     cmds:
       - convert -background none -density 96 assets/icon.svg -resize 256x256 -depth 8 PNG32:assets/icon.png
 
+  package:
+    desc: Build "Agent Proxy.app" and zip it (macOS only, needs the fyne CLI from task deps)
+    platforms: [darwin]
+    cmds:
+      - fyne package -os darwin -release
+      - rm -f agent-proxy-macos.zip
+      - zip -qr agent-proxy-macos.zip "Agent Proxy.app"
+
   clean:
     desc: Remove build output
     cmds:
-      - rm -f {{.BIN}}
+      - rm -rf {{.BIN}} "Agent Proxy.app" agent-proxy-macos.zip
