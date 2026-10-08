@@ -122,6 +122,7 @@ type Service struct {
 	Upstream string            `json:"upstream"`
 	Headers  map[string]string `json:"headers"`
 	Managed  bool              `json:"managed"`
+	Disabled bool              `json:"disabled"` // managed but router withheld, so Traefik does not route it
 	Source   string            `json:"source"`
 }
 
@@ -191,7 +192,14 @@ func upsert(doc map[string]any, s Service, eps []string) {
 		}
 		router["entryPoints"] = e
 	}
-	sub(h, "routers")[s.Name] = router
+	routers := sub(h, "routers")
+	delete(routers, s.Name)
+	if !s.Disabled {
+		routers[s.Name] = router
+	}
+	if len(routers) == 0 {
+		delete(h, "routers")
+	}
 	headers := map[string]any{}
 	for k, v := range s.Headers {
 		headers[k] = v
@@ -232,15 +240,27 @@ func remove(doc map[string]any, name string) {
 // ponytail: marshal/unmarshal via map loses comments and key order in single-file mode. Upgrade: yaml.Node round-trip.
 func extract(doc map[string]any, source string) []Service {
 	routers, _ := nested(doc, "http", "routers").(map[string]any)
-	var out []Service
+	services, _ := nested(doc, "http", "services").(map[string]any)
+	// Every router, plus routerless services in agent-proxy shape (those are disabled services).
+	names := map[string]bool{}
 	for r := range routers {
+		names[r] = true
+	}
+	for r := range services {
+		if nested(doc, "http", "middlewares", r+"-headers") != nil {
+			names[r] = true
+		}
+	}
+	var out []Service
+	for r := range names {
 		s := Service{Name: r, Source: source}
+		_, hasRouter := routers[r]
 		svc, _ := nested(doc, "http", "routers", r, "service").(string)
 		servers, _ := nested(doc, "http", "services", r, "loadBalancer", "servers").([]any)
 		hdrs, hok := nested(doc, "http", "middlewares", r+"-headers", "headers", "customRequestHeaders").(map[string]any)
-		if svc == r && hok && len(servers) > 0 {
+		if (!hasRouter || svc == r) && hok && len(servers) > 0 {
 			if u, ok := nested(map[string]any{"s": servers[0]}, "s", "url").(string); ok {
-				s.Managed, s.Upstream, s.Headers = true, u, map[string]string{}
+				s.Managed, s.Disabled, s.Upstream, s.Headers = true, !hasRouter, u, map[string]string{}
 				for k, v := range hdrs {
 					if str, ok := v.(string); ok {
 						s.Headers[k] = str
@@ -807,30 +827,34 @@ func main() {
 
 	// Row columns: dot, name, proxy URL, arrow, upstream, status, headers, delete. Widths are measured in refresh.
 	mono, bold := fyne.TextStyle{Monospace: true}, fyne.TextStyle{Bold: true}
-	widths := cols{24, 0, 0, 0, 0, 0, 0, 40}
+	widths := cols{24, 0, 0, 0, 0, 0, 0, 40, 40}
 	type row struct {
 		svc    Service
 		status string
 		proxy  string
 	}
 	var rows []row
-	var edit, del func(Service)
+	var edit, del, toggle func(Service)
 	list := widget.NewList(
 		func() int { return len(rows) },
 		func() fyne.CanvasObject {
-			rm := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
-			rm.Importance = widget.LowImportance
-			return newClickRow(container.New(widths, dot(color.Transparent), label("", bold), label("", mono), widget.NewLabel("→"), label("", mono), widget.NewLabel(""), widget.NewLabel(""), rm))
+			tg, rm := widget.NewButtonWithIcon("", theme.MediaPauseIcon(), nil), widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
+			tg.Importance, rm.Importance = widget.LowImportance, widget.LowImportance
+			return newClickRow(container.New(widths, dot(color.Transparent), label("", bold), label("", mono), widget.NewLabel("→"), label("", mono), widget.NewLabel(""), widget.NewLabel(""), tg, rm))
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			r, cr := rows[i], o.(*clickRow)
 			objs := cr.content.Objects
 			cr.onDouble = func() { edit(r.svc) }
-			rm := objs[7].(*widget.Button)
-			rm.OnTapped = func() { del(r.svc) }
-			rm.Hidden = !r.svc.Managed
+			tg, rm := objs[7].(*widget.Button), objs[8].(*widget.Button)
+			tg.OnTapped, rm.OnTapped = func() { toggle(r.svc) }, func() { del(r.svc) }
+			tg.Hidden, rm.Hidden = !r.svc.Managed, !r.svc.Managed
+			tg.SetIcon(theme.MediaPauseIcon())
+			if r.svc.Disabled {
+				tg.SetIcon(theme.MediaPlayIcon())
+			}
 			c := objs[0].(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
-			c.FillColor = map[string]color.Color{"enabled": palette[theme.ColorNameSuccess], "unmanaged": palette[theme.ColorNameDisabled]}[r.status]
+			c.FillColor = map[string]color.Color{"enabled": palette[theme.ColorNameSuccess], "unmanaged": palette[theme.ColorNameDisabled], "disabled": palette[theme.ColorNameDisabled]}[r.status]
 			if c.FillColor == nil {
 				c.FillColor = palette[theme.ColorNameWarning]
 			}
@@ -851,7 +875,7 @@ func main() {
 			}
 		},
 	)
-	head := container.New(widths, widget.NewLabel(""), label("Service", bold), label("Agents call", bold), widget.NewLabel(""), label("Upstream", bold), label("Status", bold), label("Headers", bold), widget.NewLabel(""))
+	head := container.New(widths, widget.NewLabel(""), label("Service", bold), label("Agents call", bold), widget.NewLabel(""), label("Upstream", bold), label("Status", bold), label("Headers", bold), widget.NewLabel(""), widget.NewLabel(""))
 	empty := widget.NewLabel("No services yet. Add one to give agents a proxied path to an upstream API.")
 	empty.Alignment = fyne.TextAlignCenter
 
@@ -900,8 +924,14 @@ func main() {
 			r := row{svc: v, status: "unmanaged"}
 			if v.Managed {
 				r.proxy = base + "/" + v.Name + "/"
-				if r.status = routers[v.Name]; r.status == "" {
+				// Our "disabled" means no router; Traefik's own "disabled" means it refused the router.
+				switch r.status = routers[v.Name]; {
+				case v.Disabled:
+					r.status = "disabled"
+				case r.status == "":
 					r.status = "unknown"
+				case r.status == "disabled":
+					r.status = "error"
 				}
 			}
 			rows = append(rows, r)
@@ -943,6 +973,10 @@ func main() {
 			return
 		}
 		editService(w, s, target, isFile, svc, report)
+	}
+	toggle = func(svc Service) {
+		svc.Disabled = !svc.Disabled
+		report(saveService(target, isFile, svc, entryPoints(s)))
 	}
 	del = func(svc Service) {
 		dialog.ShowConfirm("Delete service", fmt.Sprintf("Delete %s? Agents will no longer reach it through the proxy.", svc.Name), func(yes bool) {

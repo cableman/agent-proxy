@@ -89,3 +89,21 @@ func TestAuthRoundTrip(t *testing.T) {
 		t.Fatalf("basic password: %q", s)
 	}
 }
+
+func TestDisabledRoundTrip(t *testing.T) {
+	s := Service{Name: "gh", Upstream: "https://api.github.com", Headers: map[string]string{}, Disabled: true}
+	doc := map[string]any{}
+	upsert(doc, s, []string{"web"})
+	if nested(doc, "http", "routers") != nil {
+		t.Fatal("disabled service must not write a router")
+	}
+	got := extract(doc, "f")
+	if len(got) != 1 || !got[0].Managed || !got[0].Disabled {
+		t.Fatalf("extract: %+v", got)
+	}
+	s.Disabled = false
+	upsert(doc, s, []string{"web"})
+	if got := extract(doc, "f"); got[0].Disabled || nested(doc, "http", "routers", "gh", "service") != "gh" {
+		t.Fatalf("re-enable: %+v", got)
+	}
+}
