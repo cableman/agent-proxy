@@ -200,6 +200,9 @@ the config directory private.
 
 ### The service list
 
+- **Click** a row to copy its agents call URL. A short message at the bottom
+  of the window confirms the copy, and errors such as an unreadable config
+  folder show up there too.
 - **Double-click** a row to edit it.
 - **Pause** disables a service. Its router is removed from the YAML so Traefik
   stops routing it, while the upstream and headers stay saved. **Play** writes
