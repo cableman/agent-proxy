@@ -202,8 +202,8 @@ the config directory private.
 
 - **Double-click** a row to edit it.
 - **Pause** disables a service. Its router is removed from the YAML so Traefik
-  stops routing it, while the upstream and headers stay saved. **Play** writes
-  the router back.
+  stops routing it, while the upstream and headers stay saved. The row is
+  dimmed while paused. **Play** writes the router back.
 - **Trash** deletes the service after confirmation.
 - **Status** comes from the Traefik API: `enabled` means Traefik serves the
   route, `error` means Traefik rejected it, `unknown` means Traefik has not
