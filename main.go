@@ -327,6 +327,8 @@ func listServices(target string, isFile bool) ([]Service, error) {
 		doc, err := readDoc(filepath.Join(target, n))
 		if err != nil {
 			log.Print(err)
+		} else if len(doc) == 0 {
+			continue // empty or comment-only, e.g. a bind-mount placeholder; unreadable files still get a row
 		}
 		svcs := extract(doc, n)
 		if len(svcs) == 0 {
