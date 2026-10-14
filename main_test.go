@@ -107,3 +107,30 @@ func TestDisabledRoundTrip(t *testing.T) {
 		t.Fatalf("re-enable: %+v", got)
 	}
 }
+
+// Empty files (bind-mount placeholders) are hidden, but a broken file must stay visible:
+// Traefik rejects the whole directory over it.
+func TestListServicesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"placeholder.yaml": "# mount point only\n",
+		"empty.yml":        "",
+		"broken.yml":       "http: [\n",
+		"tls.yml":          "tls:\n  certificates: []\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := listServices(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, s := range got {
+		names = append(names, s.Name)
+	}
+	if want := []string{"broken", "tls"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("listed %v, want %v", names, want)
+	}
+}
