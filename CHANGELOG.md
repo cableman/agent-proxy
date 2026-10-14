@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `task package` builds a universal `Agent Proxy.app` (Apple Silicon and Intel)
   with a valid ad hoc signature and a correct minimum macOS version (13.0).
 - `task run:app` packages and opens the macOS app bundle.
+- Light and dark mode, chosen under Appearance in Settings; the default follows
+  the system setting.
 - Clicking a service row copies its agents call URL to the clipboard.
 
 ### Changed
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fyne CLI is pinned in `tools/go.mod` and run through `go tool`, so
   `task package` no longer depends on `PATH` or an unpinned `@latest` install.
 - The app icon is rendered at 1024 px so it stays sharp on Retina displays.
+- Paused services are shown dimmed so they stand apart from active ones.
 - Edit and Delete moved into a ⋮ menu at the end of each row, also opened by
   right-clicking the row; double-clicking a row no longer opens the editor.
 - Status and error messages appear as a toast at the bottom of the window

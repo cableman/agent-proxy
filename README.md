@@ -175,6 +175,10 @@ and asks for the config path on first launch.
 - a dynamic config file: all services in one file, other content is preserved
 - Traefik's static `traefik.yml`: the file provider path is read from it
 
+**Appearance** in the Settings dialog picks Light, Dark, or System. System, the
+default, follows the operating system and switches along with it while the app
+is running.
+
 ![Settings](docs/settings.png)
 
 ### Adding a service
@@ -206,8 +210,8 @@ the config directory private.
 - **⋮** at the end of a row opens **Edit** and **Delete**. Right-clicking the
   row opens the same menu. Delete asks for confirmation.
 - **Pause** disables a service. Its router is removed from the YAML so Traefik
-  stops routing it, while the upstream and headers stay saved. **Play** writes
-  the router back.
+  stops routing it, while the upstream and headers stay saved. The row is
+  dimmed while paused. **Play** writes the router back.
 - **Status** comes from the Traefik API: `enabled` means Traefik serves the
   route, `error` means Traefik rejected it, `unknown` means Traefik has not
   reported it yet or the API is unreachable, and `disabled` means you paused it.
