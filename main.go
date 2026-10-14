@@ -513,24 +513,24 @@ func (c cols) Layout(objs []fyne.CanvasObject, size fyne.Size) {
 	}
 }
 
-// clickRow is a list row that reports double clicks; single taps still select through the list.
-type clickRow struct {
+// actionRow is a list row that opens its action menu on right-click.
+type actionRow struct {
 	widget.BaseWidget
-	content  *fyne.Container
-	onDouble func()
+	content *fyne.Container
+	onMenu  func(at fyne.Position) // at is canvas-absolute; nil when the row has no actions
 }
 
-func newClickRow(c *fyne.Container) *clickRow {
-	r := &clickRow{content: c}
+func newActionRow(c *fyne.Container) *actionRow {
+	r := &actionRow{content: c}
 	r.ExtendBaseWidget(r)
 	return r
 }
 
-func (r *clickRow) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(r.content) }
+func (r *actionRow) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(r.content) }
 
-func (r *clickRow) DoubleTapped(*fyne.PointEvent) {
-	if r.onDouble != nil {
-		r.onDouble()
+func (r *actionRow) TappedSecondary(e *fyne.PointEvent) {
+	if r.onMenu != nil {
+		r.onMenu(e.AbsolutePosition)
 	}
 }
 
@@ -822,7 +822,7 @@ func main() {
 	w := a.NewWindow("Agent Proxy")
 	w.Resize(fyne.NewSize(1000, 560))
 
-	// Row columns: dot, name, proxy URL, arrow, upstream, status, headers, delete. Widths are measured in refresh.
+	// Row columns: dot, name, proxy URL, arrow, upstream, status, headers, pause, actions. Widths are measured in refresh.
 	mono, bold := fyne.TextStyle{Monospace: true}, fyne.TextStyle{Bold: true}
 	widths := cols{24, 0, 0, 0, 0, 0, 0, 40, 40}
 	type row struct {
@@ -832,20 +832,34 @@ func main() {
 	}
 	var rows []row
 	var edit, del, toggle func(Service)
+	actions := func(svc Service) *widget.PopUpMenu {
+		return widget.NewPopUpMenu(fyne.NewMenu("",
+			fyne.NewMenuItemWithIcon("Edit", theme.DocumentCreateIcon(), func() { edit(svc) }),
+			fyne.NewMenuItemWithIcon("Delete", theme.DeleteIcon(), func() { del(svc) }),
+		), w.Canvas())
+	}
 	list := widget.NewList(
 		func() int { return len(rows) },
 		func() fyne.CanvasObject {
-			tg, rm := widget.NewButtonWithIcon("", theme.MediaPauseIcon(), nil), widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
-			tg.Importance, rm.Importance = widget.LowImportance, widget.LowImportance
-			return newClickRow(container.New(widths, dot(color.Transparent), label("", bold), label("", mono), widget.NewLabel("→"), label("", mono), widget.NewLabel(""), widget.NewLabel(""), tg, rm))
+			tg, more := widget.NewButtonWithIcon("", theme.MediaPauseIcon(), nil), widget.NewButtonWithIcon("", theme.MoreVerticalIcon(), nil)
+			tg.Importance, more.Importance = widget.LowImportance, widget.LowImportance
+			return newActionRow(container.New(widths, dot(color.Transparent), label("", bold), label("", mono), widget.NewLabel("→"), label("", mono), widget.NewLabel(""), widget.NewLabel(""), tg, more))
 		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
-			r, cr := rows[i], o.(*clickRow)
-			objs := cr.content.Objects
-			cr.onDouble = func() { edit(r.svc) }
-			tg, rm := objs[7].(*widget.Button), objs[8].(*widget.Button)
-			tg.OnTapped, rm.OnTapped = func() { toggle(r.svc) }, func() { del(r.svc) }
-			tg.Hidden, rm.Hidden = !r.svc.Managed, !r.svc.Managed
+			r, ar := rows[i], o.(*actionRow)
+			objs := ar.content.Objects
+			tg, more := objs[7].(*widget.Button), objs[8].(*widget.Button)
+			tg.OnTapped = func() { toggle(r.svc) }
+			// The menu opens under the ⋮ button, right edges aligned, so it grows towards the row.
+			more.OnTapped = func() {
+				m := actions(r.svc)
+				m.ShowAtRelativePosition(fyne.NewPos(more.Size().Width-m.MinSize().Width, more.Size().Height), more)
+			}
+			ar.onMenu = nil
+			if r.svc.Managed {
+				ar.onMenu = func(at fyne.Position) { actions(r.svc).ShowAtPosition(at) }
+			}
+			tg.Hidden, more.Hidden = !r.svc.Managed, !r.svc.Managed
 			tg.SetIcon(theme.MediaPauseIcon())
 			if r.svc.Disabled {
 				tg.SetIcon(theme.MediaPlayIcon())
@@ -971,13 +985,7 @@ func main() {
 		}
 		refresh()
 	}
-	edit = func(svc Service) {
-		if !svc.Managed {
-			flash(svc.Name + " was not created by Agent Proxy; edit its YAML by hand")
-			return
-		}
-		editService(w, s, target, isFile, svc, report)
-	}
+	edit = func(svc Service) { editService(w, s, target, isFile, svc, report) }
 	toggle = func(svc Service) {
 		svc.Disabled = !svc.Disabled
 		report(saveService(target, isFile, svc, entryPoints(s)))

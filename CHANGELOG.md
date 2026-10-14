@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `task package` no longer depends on `PATH` or an unpinned `@latest` install.
 - The app icon is rendered at 1024 px so it stays sharp on Retina displays.
 - Paused services are shown dimmed so they stand apart from active ones.
+- Edit and Delete moved into a ⋮ menu at the end of each row, also opened by
+  right-clicking the row; double-clicking a row no longer opens the editor.
 
 ### Fixed
 
