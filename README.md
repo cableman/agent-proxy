@@ -175,6 +175,10 @@ and asks for the config path on first launch.
 - a dynamic config file: all services in one file, other content is preserved
 - Traefik's static `traefik.yml`: the file provider path is read from it
 
+**Appearance** in the Settings dialog picks Light, Dark, or System. System, the
+default, follows the operating system and switches along with it while the app
+is running.
+
 ![Settings](docs/settings.png)
 
 ### Adding a service
