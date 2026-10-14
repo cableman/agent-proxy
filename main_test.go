@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -105,5 +106,38 @@ func TestDisabledRoundTrip(t *testing.T) {
 	upsert(doc, s, []string{"web"})
 	if got := extract(doc, "f"); got[0].Disabled || nested(doc, "http", "routers", "gh", "service") != "gh" {
 		t.Fatalf("re-enable: %+v", got)
+	}
+}
+
+func TestGitExposure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir() // a symlinked path on macOS, which gitExposure must handle
+	git := func(args ...string) {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	os.Mkdir(filepath.Join(repo, "local"), 0o700)
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("local/\nforced.yaml\n"), 0o600)
+	for _, f := range []string{"tracked.yaml", "untracked.yaml", "forced.yaml"} {
+		os.WriteFile(filepath.Join(repo, f), []byte("http: {}\n"), 0o600)
+	}
+	git("add", "tracked.yaml")
+	git("add", "-f", "forced.yaml") // tracked despite matching .gitignore
+
+	outside := filepath.Join(t.TempDir(), "x.yaml")
+	for path, exposed := range map[string]bool{
+		filepath.Join(repo, "tracked.yaml"):     true,
+		filepath.Join(repo, "untracked.yaml"):   true,
+		filepath.Join(repo, "forced.yaml"):      true,
+		filepath.Join(repo, "local", "svc.yml"): false,
+		outside:                                 false,
+	} {
+		if got := gitExposure(path) != ""; got != exposed {
+			t.Errorf("gitExposure(%s) exposed=%v, want %v", path, got, exposed)
+		}
 	}
 }
