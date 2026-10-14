@@ -38,6 +38,7 @@ type Settings struct {
 	Traefik     string `json:"traefik"`     // Traefik API base
 	Base        string `json:"base"`        // display-only agent base URL
 	EntryPoints string `json:"entryPoints"` // comma-separated; "" = all (key omitted)
+	Theme       string `json:"theme"`       // "light" | "dark"; anything else follows the system
 }
 
 func settingsPath() string {
@@ -417,8 +418,12 @@ var rubikMedium []byte
 //go:embed assets/FiraMono-Regular.otf
 var firaMono []byte
 
-// look follows the Traefik dashboard (Faency, light, blue primary): Rubik type, Radix blue, navy header.
-type look struct{ fyne.Theme }
+// look follows the Traefik dashboard (Faency, blue primary): Rubik type, Radix blue, navy header.
+// mode is Settings.Theme: "light" or "dark" pin the variant, anything else uses the one Fyne reports for the system.
+type look struct {
+	fyne.Theme
+	mode string
+}
 
 func hex(v uint32) color.Color {
 	return color.NRGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xFF}
@@ -451,17 +456,51 @@ var palette = map[fyne.ThemeColorName]color.Color{
 	theme.ColorNameError:             hex(0xFF3366), // faency red9
 }
 
+// darkPalette uses Faency's dark scales: elevation for surfaces, grayBlueDark for text, deepBlueDark for lines and states.
+// Disabled is grayBlueDark9, not 10, so dimmed text keeps roughly the contrast it has in the light palette.
+var darkPalette = map[fyne.ThemeColorName]color.Color{
+	theme.ColorNameBackground:        hex(0x071727), // elevationDark 00dp
+	theme.ColorNameForeground:        hex(0xDDE1E4), // grayBlueDark12
+	theme.ColorNamePrimary:           hex(0x0091FF), // radix blue9
+	theme.ColorNameFocus:             color.NRGBA{R: 0x00, G: 0x91, B: 0xFF, A: 0x66},
+	theme.ColorNameSelection:         hex(0x1C3348), // deepBlueDark6
+	theme.ColorNameHover:             hex(0x16293B), // deepBlueDark4
+	theme.ColorNamePressed:           hex(0x213B52), // deepBlueDark7
+	theme.ColorNameButton:            hex(0x182734), // elevationDark 01dp
+	theme.ColorNameInputBackground:   hex(0x182734),
+	theme.ColorNameInputBorder:       hex(0x284158), // grayBlueDark8
+	theme.ColorNameSeparator:         hex(0x1C3348), // deepBlueDark6
+	theme.ColorNameHeaderBackground:  hex(0x131F2A), // grayBlueDark7
+	theme.ColorNameOverlayBackground: hex(0x1D2D39), // elevationDark 02dp
+	theme.ColorNameMenuBackground:    hex(0x1D2D39),
+	theme.ColorNamePlaceHolder:       hex(0x66747F), // grayBlueDark9
+	theme.ColorNameDisabled:          hex(0x66747F),
+	theme.ColorNameSuccess:           hex(0x30A46C), // radix green9
+	theme.ColorNameWarning:           hex(0xF7680A), // faency orange9
+	theme.ColorNameError:             hex(0xFF3366), // faency red9
+}
+
 var fonts = map[string]fyne.Resource{
 	"regular": fyne.NewStaticResource("Rubik-Regular.ttf", rubik),
 	"bold":    fyne.NewStaticResource("Rubik-Medium.ttf", rubikMedium),
 	"mono":    fyne.NewStaticResource("FiraMono-Regular.otf", firaMono),
 }
 
-func (l look) Color(n fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
-	if c, ok := palette[n]; ok {
+func (l look) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	switch l.mode {
+	case "light":
+		v = theme.VariantLight
+	case "dark":
+		v = theme.VariantDark
+	}
+	p := palette
+	if v == theme.VariantDark {
+		p = darkPalette
+	}
+	if c, ok := p[n]; ok {
 		return c
 	}
-	return l.Theme.Color(n, theme.VariantLight)
+	return l.Theme.Color(n, v)
 }
 
 func (l look) Font(st fyne.TextStyle) fyne.Resource {
@@ -648,11 +687,25 @@ func entry(text, placeholder string) *widget.Entry {
 	return e
 }
 
+// themeLabel is the Settings radio label for a stored Settings.Theme value.
+func themeLabel(mode string) string {
+	switch mode {
+	case "light":
+		return "Light"
+	case "dark":
+		return "Dark"
+	}
+	return "System"
+}
+
 // editSettings calls done(true) after a valid save, done(false) on cancel.
 func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)) {
 	cfg := entry(s.Config, "dynamic dir, dynamic .yml, or traefik.yml")
 	api, base := entry(s.Traefik, ""), entry(s.Base, "")
 	eps := entry(s.EntryPoints, "comma-separated; empty = all")
+	appearance := widget.NewRadioGroup([]string{"System", "Light", "Dark"}, nil)
+	appearance.Horizontal, appearance.Required = true, true
+	appearance.SetSelected(themeLabel(s.Theme))
 	file := widget.NewButton("Choose file", func() {
 		d := dialog.NewFileOpen(func(r fyne.URIReadCloser, _ error) {
 			if r != nil {
@@ -678,8 +731,9 @@ func editSettings(w fyne.Window, s *Settings, problem string, done func(ok bool)
 		widget.NewFormItem("Traefik API", api),
 		widget.NewFormItem("Agents call", base),
 		widget.NewFormItem("Entry points", eps),
+		widget.NewFormItem("Appearance", appearance),
 	}, func() error {
-		n := Settings{Config: abs(strings.TrimSpace(cfg.Text)), Traefik: strings.TrimSpace(api.Text), Base: strings.TrimSpace(base.Text), EntryPoints: eps.Text}
+		n := Settings{Config: abs(strings.TrimSpace(cfg.Text)), Traefik: strings.TrimSpace(api.Text), Base: strings.TrimSpace(base.Text), EntryPoints: eps.Text, Theme: strings.ToLower(appearance.Selected)}
 		if _, _, err := resolve(n.Config); err != nil {
 			return err
 		}
@@ -789,7 +843,7 @@ func editService(w fyne.Window, s Settings, target string, isFile bool, old Serv
 }
 
 func main() {
-	s := Settings{Traefik: "http://127.0.0.1:8080", Base: "http://localhost", EntryPoints: "web"}
+	s := Settings{Traefik: "http://127.0.0.1:8080", Base: "http://localhost", EntryPoints: "web", Theme: "system"}
 	if data, err := os.ReadFile(settingsPath()); err == nil {
 		json.Unmarshal(data, &s)
 	}
@@ -817,7 +871,8 @@ func main() {
 
 	// Explicit ID: FyneApp.toml is only read from the working directory in dev builds, and the Preferences API (used by the file dialog) needs one.
 	a := app.NewWithID("dk.aarhus.agent-proxy")
-	a.Settings().SetTheme(look{theme.DefaultTheme()})
+	applyTheme := func() { a.Settings().SetTheme(look{theme.DefaultTheme(), s.Theme}) }
+	applyTheme()
 	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))
 	w := a.NewWindow("Agent Proxy")
 	w.Resize(fyne.NewSize(1000, 560))
@@ -865,10 +920,11 @@ func main() {
 				tg.SetIcon(theme.MediaPlayIcon())
 			}
 			c := objs[0].(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
-			c.FillColor = map[string]color.Color{"enabled": palette[theme.ColorNameSuccess], "unmanaged": palette[theme.ColorNameDisabled], "disabled": palette[theme.ColorNameDisabled]}[r.status]
-			if c.FillColor == nil {
-				c.FillColor = palette[theme.ColorNameWarning]
+			name, known := map[string]fyne.ThemeColorName{"enabled": theme.ColorNameSuccess, "unmanaged": theme.ColorNameDisabled, "disabled": theme.ColorNameDisabled}[r.status]
+			if !known {
+				name = theme.ColorNameWarning
 			}
+			c.FillColor = theme.Color(name)
 			c.Refresh()
 			n := len(r.svc.Headers)
 			texts := []string{"", r.svc.Name, r.proxy, "→", r.svc.Upstream, r.status, fmt.Sprintf("%d headers", n)}
@@ -900,8 +956,25 @@ func main() {
 	title, where, conn := canvas.NewText("Agent Proxy", color.White), canvas.NewText("", navyMuted), canvas.NewText("", color.White)
 	title.TextStyle, title.TextSize, where.TextStyle = bold, 20, mono
 	connDot := dot(color.Transparent)
-	header := container.NewStack(canvas.NewRectangle(navy), container.NewPadded(container.NewPadded(container.NewBorder(nil, nil,
-		container.NewHBox(container.NewCenter(title), container.NewCenter(where)), container.NewHBox(connDot, container.NewCenter(conn))))))
+	connected := false
+	paintConn := func() {
+		c := connDot.(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
+		c.FillColor = theme.Color(theme.ColorNameDisabled)
+		if connected {
+			c.FillColor = theme.Color(theme.ColorNameSuccess)
+		}
+		c.Refresh()
+	}
+	// Widgets restyle themselves on a theme or system appearance change; the hand-painted dots do not.
+	a.Settings().AddListener(func(fyne.Settings) {
+		fyne.Do(func() {
+			paintConn()
+			list.Refresh()
+		})
+	})
+	// The separator keeps the navy header apart from the dark palette's near-navy background; on light it is barely visible.
+	header := container.New(layout.NewCustomPaddedVBoxLayout(0), container.NewStack(canvas.NewRectangle(navy), container.NewPadded(container.NewPadded(container.NewBorder(nil, nil,
+		container.NewHBox(container.NewCenter(title), container.NewCenter(where)), container.NewHBox(connDot, container.NewCenter(conn)))))), widget.NewSeparator())
 	msg := widget.NewLabel("")
 	flash := func(text string) {
 		msg.SetText(text)
@@ -927,12 +1000,11 @@ func main() {
 			flash(err.Error())
 		}
 		ok, routers := status(s.Traefik)
-		c := connDot.(*fyne.Container).Objects[0].(*fyne.Container).Objects[0].(*canvas.Circle)
-		c.FillColor, conn.Text = palette[theme.ColorNameDisabled], "Traefik unreachable"
+		connected, conn.Text = ok, "Traefik unreachable"
 		if ok {
-			c.FillColor, conn.Text = palette[theme.ColorNameSuccess], "Traefik connected"
+			conn.Text = "Traefik connected"
 		}
-		c.Refresh()
+		paintConn()
 		conn.Refresh()
 		where.Text = target
 		where.Refresh()
@@ -1007,6 +1079,7 @@ func main() {
 		widget.NewButton("Settings", func() {
 			editSettings(w, &s, "", func(ok bool) {
 				if ok {
+					applyTheme()
 					refresh()
 				}
 			})
@@ -1017,6 +1090,7 @@ func main() {
 	if _, _, err := resolve(s.Config); err != nil {
 		editSettings(w, &s, err.Error(), func(ok bool) {
 			if ok {
+				applyTheme()
 				refresh()
 			} else {
 				w.Close()

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `task package` builds a universal `Agent Proxy.app` (Apple Silicon and Intel)
   with a valid ad hoc signature and a correct minimum macOS version (13.0).
 - `task run:app` packages and opens the macOS app bundle.
+- Light and dark mode, chosen under Appearance in Settings; the default follows
+  the system setting.
 
 ### Changed
 
