@@ -148,7 +148,27 @@ providers:
 ```
 
 When Traefik runs in Docker, including Docker Desktop on macOS, point Agent
-Proxy at the host side of the bind mount, not the container path.
+Proxy at the host side of the bind mount, not the container path. Traefik also
+reads subdirectories of the file provider directory, but only reloads on
+changes to files directly in it, so mount the directory Agent Proxy writes to
+as the provider directory itself, not as a subdirectory of it.
+
+### With itkdev-docker
+
+[itkdev-docker](https://github.com/itk-dev/devops_itkdev-docker) mounts the
+untracked `traefik/dynamic.d/` as Traefik's config directory, next to the
+shared `traefik/dynamic-conf.yaml`. Point Agent Proxy at the directory:
+
+```sh
+./agent-proxy -config ~/itkdev-docker/traefik/dynamic.d -traefik http://127.0.0.1:8080
+```
+
+Do not point it at `traefik/dynamic-conf.yaml`. That file is tracked in a public
+repository, so a commit would publish the API keys. To move services already in
+it, add them again in Agent Proxy or move their entries to `dynamic.d/`, then
+restore the shared file with `git checkout -- traefik/dynamic-conf.yaml`. Keep
+each service in one place only: Traefik drops a router or middleware defined
+twice with different content.
 
 ## Usage
 

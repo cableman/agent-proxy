@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clicking a service row copies its agents call URL to the clipboard.
 - A warning above the service list when the config is in a git repository and
   not ignored, so API keys are not committed by accident.
+- README section on using Agent Proxy with itkdev-docker's untracked
+  `traefik/dynamic.d/` config directory.
 
 ### Changed
 
