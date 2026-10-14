@@ -552,10 +552,11 @@ func (c cols) Layout(objs []fyne.CanvasObject, size fyne.Size) {
 	}
 }
 
-// actionRow is a list row that opens its action menu on right-click.
+// actionRow is a list row that reports taps and opens its action menu on right-click.
 type actionRow struct {
 	widget.BaseWidget
 	content *fyne.Container
+	onTap   func()
 	onMenu  func(at fyne.Position) // at is canvas-absolute; nil when the row has no actions
 }
 
@@ -566,6 +567,12 @@ func newActionRow(c *fyne.Container) *actionRow {
 }
 
 func (r *actionRow) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(r.content) }
+
+func (r *actionRow) Tapped(*fyne.PointEvent) {
+	if r.onTap != nil {
+		r.onTap()
+	}
+}
 
 func (r *actionRow) TappedSecondary(e *fyne.PointEvent) {
 	if r.onMenu != nil {
@@ -584,6 +591,96 @@ func dot(c color.Color) fyne.CanvasObject {
 }
 
 func warn(w fyne.Window, err error) { dialog.ShowError(err, w) }
+
+// inverse swaps foreground and background so labels and icons read on the toast surface.
+// It looks up the app theme on every call, so the toast follows theme changes.
+type inverse struct{}
+
+func (inverse) base() fyne.Theme { return fyne.CurrentApp().Settings().Theme() }
+
+func (i inverse) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	switch n {
+	case theme.ColorNameForeground:
+		n = theme.ColorNameBackground
+	case theme.ColorNameBackground:
+		n = theme.ColorNameForeground
+	}
+	return i.base().Color(n, v)
+}
+
+func (i inverse) Font(s fyne.TextStyle) fyne.Resource     { return i.base().Font(s) }
+func (i inverse) Icon(n fyne.ThemeIconName) fyne.Resource { return i.base().Icon(n) }
+func (i inverse) Size(n fyne.ThemeSizeName) float32       { return i.base().Size(n) }
+
+type toastKind int
+
+const (
+	toastInfo toastKind = iota
+	toastSuccess
+	toastError
+)
+
+const toastMaxWidth = 560
+
+// toast shows one short message centred over the bottom of the window. Its layer holds nothing
+// tappable, so clicks pass through to the rows beneath, and its zero MinSize never grows the window.
+type toast struct {
+	layer *fyne.Container
+	box   *fyne.Container
+	bg    *canvas.Rectangle
+	icon  *widget.Icon
+	text  *widget.Label
+	shown int // bumped per message so an older timer cannot hide a newer message
+}
+
+func newToast() *toast {
+	t := &toast{bg: canvas.NewRectangle(color.Transparent), icon: widget.NewIcon(nil), text: widget.NewLabel("")}
+	t.bg.CornerRadius = 6
+	t.text.Wrapping = fyne.TextWrapWord
+	t.box = container.NewStack(t.bg, container.NewThemeOverride(
+		container.NewPadded(container.NewBorder(nil, nil, container.NewCenter(t.icon), nil, t.text)), inverse{}))
+	t.box.Hide()
+	t.layer = container.New(t, t.box)
+	return t
+}
+
+func (t *toast) MinSize([]fyne.CanvasObject) fyne.Size { return fyne.Size{} }
+
+func (t *toast) Layout(_ []fyne.CanvasObject, size fyne.Size) {
+	margin := 4 * theme.Padding()
+	chrome := theme.IconInlineSize() + 3*theme.Padding() + 2*theme.InnerPadding() // icon, gaps and label insets
+	natural := fyne.MeasureText(t.text.Text, theme.TextSize(), t.text.TextStyle).Width + chrome
+	w := min(natural, toastMaxWidth, size.Width-2*margin)
+	// The wrapped label only knows its height once it has a width, so size twice.
+	t.box.Resize(fyne.NewSize(w, t.box.MinSize().Height))
+	t.box.Resize(fyne.NewSize(w, t.box.MinSize().Height))
+	t.box.Move(fyne.NewPos((size.Width-w)/2, size.Height-t.box.Size().Height-margin))
+}
+
+// show replaces any visible message. Errors stay long enough to read a path.
+func (t *toast) show(kind toastKind, text string) {
+	icon, d := fyne.Resource(theme.InfoIcon()), 3*time.Second
+	switch kind {
+	case toastSuccess:
+		icon = theme.NewSuccessThemedResource(theme.ConfirmIcon())
+	case toastError:
+		icon, d = theme.NewErrorThemedResource(theme.ErrorIcon()), 8*time.Second
+	}
+	t.shown++
+	n := t.shown
+	t.bg.FillColor = theme.Color(theme.ColorNameForeground)
+	t.icon.SetResource(icon)
+	t.text.SetText(text)
+	t.box.Show()
+	t.layer.Refresh()
+	time.AfterFunc(d, func() {
+		fyne.Do(func() {
+			if t.shown == n {
+				t.box.Hide()
+			}
+		})
+	})
+}
 
 // form shows a dialog; submit runs on Save and the form reopens (values intact) when it errors. cancel runs when dismissed.
 // The returned func re-fits the dialog after its content grows or shrinks.
@@ -893,6 +990,23 @@ func main() {
 			fyne.NewMenuItemWithIcon("Delete", theme.DeleteIcon(), func() { del(svc) }),
 		), w.Canvas())
 	}
+	notice := newToast()
+	notManaged := func(svc Service) string {
+		return svc.Name + " is not managed by Agent Proxy; edit " + svc.Source + " by hand"
+	}
+	// copyCall puts the URL agents call on the clipboard; a paused service still copies, with a reminder.
+	copyCall := func(r row) {
+		if !r.svc.Managed {
+			notice.show(toastInfo, notManaged(r.svc))
+			return
+		}
+		a.Clipboard().SetContent(r.proxy)
+		text := "Copied " + r.proxy
+		if r.svc.Disabled {
+			text += "; " + r.svc.Name + " is paused"
+		}
+		notice.show(toastSuccess, text)
+	}
 	list := widget.NewList(
 		func() int { return len(rows) },
 		func() fyne.CanvasObject {
@@ -903,6 +1017,7 @@ func main() {
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			r, ar := rows[i], o.(*actionRow)
 			objs := ar.content.Objects
+			ar.onTap = func() { copyCall(r) }
 			tg, more := objs[7].(*widget.Button), objs[8].(*widget.Button)
 			tg.OnTapped = func() { toggle(r.svc) }
 			// The menu opens under the ⋮ button, right edges aligned, so it grows towards the row.
@@ -949,6 +1064,11 @@ func main() {
 			}
 		},
 	)
+	// Mouse taps land on the row itself; this catches keyboard selection (Space) on a focused list.
+	list.OnSelected = func(id widget.ListItemID) {
+		copyCall(rows[id])
+		list.Unselect(id)
+	}
 	head := container.New(widths, widget.NewLabel(""), label("Service", bold), label("Agents call", bold), widget.NewLabel(""), label("Upstream", bold), label("Status", bold), label("Headers", bold), widget.NewLabel(""), widget.NewLabel(""))
 	empty := widget.NewLabel("No services yet. Add one to give agents a proxied path to an upstream API.")
 	empty.Alignment = fyne.TextAlignCenter
@@ -975,17 +1095,6 @@ func main() {
 	// The separator keeps the navy header apart from the dark palette's near-navy background; on light it is barely visible.
 	header := container.New(layout.NewCustomPaddedVBoxLayout(0), container.NewStack(canvas.NewRectangle(navy), container.NewPadded(container.NewPadded(container.NewBorder(nil, nil,
 		container.NewHBox(container.NewCenter(title), container.NewCenter(where)), container.NewHBox(connDot, container.NewCenter(conn)))))), widget.NewSeparator())
-	msg := widget.NewLabel("")
-	flash := func(text string) {
-		msg.SetText(text)
-		time.AfterFunc(8*time.Second, func() {
-			fyne.Do(func() {
-				if msg.Text == text {
-					msg.SetText("")
-				}
-			})
-		})
-	}
 
 	var svcs []Service
 	var target string
@@ -993,11 +1102,11 @@ func main() {
 	refresh := func() {
 		var err error
 		if target, isFile, err = resolve(s.Config); err != nil {
-			flash(err.Error())
+			notice.show(toastError, err.Error())
 			return
 		}
 		if svcs, err = listServices(target, isFile); err != nil {
-			flash(err.Error())
+			notice.show(toastError, err.Error())
 		}
 		ok, routers := status(s.Traefik)
 		connected, conn.Text = ok, "Traefik unreachable"
@@ -1086,7 +1195,7 @@ func main() {
 		}),
 	)
 	body := container.NewBorder(container.NewVBox(buttons, head, widget.NewSeparator()), nil, nil, nil, container.NewStack(list, empty))
-	w.SetContent(container.NewBorder(header, container.NewPadded(msg), nil, nil, container.NewPadded(body)))
+	w.SetContent(container.NewStack(container.NewBorder(header, nil, nil, nil, container.NewPadded(body)), notice.layer))
 	if _, _, err := resolve(s.Config); err != nil {
 		editSettings(w, &s, err.Error(), func(ok bool) {
 			if ok {

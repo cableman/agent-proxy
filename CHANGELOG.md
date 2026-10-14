@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `task run:app` packages and opens the macOS app bundle.
 - Light and dark mode, chosen under Appearance in Settings; the default follows
   the system setting.
+- Clicking a service row copies its agents call URL to the clipboard.
 
 ### Changed
 
@@ -23,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Paused services are shown dimmed so they stand apart from active ones.
 - Edit and Delete moved into a ⋮ menu at the end of each row, also opened by
   right-clicking the row; double-clicking a row no longer opens the editor.
+- Status and error messages appear as a toast at the bottom of the window
+  instead of a permanent status line.
 
 ### Fixed
 
