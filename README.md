@@ -200,7 +200,9 @@ Only schemes that boil down to a fixed header value are offered. Traefik cannot
 sign requests, so AWS Signature, Digest, OAuth 1.0 and similar are out of scope.
 
 Secrets are stored in plain text in the Traefik YAML, as Traefik requires. Keep
-the config directory private.
+the config directory private and out of git. When the config sits in a git
+repository without being ignored, Agent Proxy shows a warning above the list,
+since a commit there would publish the keys.
 
 ### The service list
 
