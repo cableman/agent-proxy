@@ -881,8 +881,15 @@ func main() {
 				note.TextStyle = fyne.TextStyle{}
 				texts = []string{"", r.svc.Name, "not managed by Agent Proxy (" + r.svc.Source + ")", "", "", "", ""}
 			}
+			// A paused row reads as disabled; its Play button keeps full contrast so resuming stays obvious.
+			importance := widget.MediumImportance
+			if r.svc.Disabled {
+				importance = widget.LowImportance
+			}
 			for i := 1; i < len(texts); i++ {
-				objs[i].(*widget.Label).SetText(texts[i])
+				l := objs[i].(*widget.Label)
+				l.Importance = importance
+				l.SetText(texts[i])
 			}
 		},
 	)
