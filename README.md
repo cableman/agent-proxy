@@ -200,11 +200,11 @@ the config directory private.
 
 ### The service list
 
-- **Double-click** a row to edit it.
+- **⋮** at the end of a row opens **Edit** and **Delete**. Right-clicking the
+  row opens the same menu. Delete asks for confirmation.
 - **Pause** disables a service. Its router is removed from the YAML so Traefik
   stops routing it, while the upstream and headers stay saved. **Play** writes
   the router back.
-- **Trash** deletes the service after confirmation.
 - **Status** comes from the Traefik API: `enabled` means Traefik serves the
   route, `error` means Traefik rejected it, `unknown` means Traefik has not
   reported it yet or the API is unreachable, and `disabled` means you paused it.
