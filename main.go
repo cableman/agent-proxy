@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -327,6 +328,8 @@ func listServices(target string, isFile bool) ([]Service, error) {
 		doc, err := readDoc(filepath.Join(target, n))
 		if err != nil {
 			log.Print(err)
+		} else if len(doc) == 0 {
+			continue // empty or comment-only, e.g. a bind-mount placeholder; unreadable files still get a row
 		}
 		svcs := extract(doc, n)
 		if len(svcs) == 0 {
@@ -371,6 +374,43 @@ func deleteService(target string, isFile bool, name string) error {
 		}
 	}
 	return fs.ErrNotExist
+}
+
+// ---------- git ----------
+
+// gitExposure returns the root of the git work tree holding path when git does not ignore path,
+// so a commit there would publish the API keys Agent Proxy writes. "" means ignored, not in a
+// work tree, or git unavailable. For a directory, pass a would-be service file inside it.
+func gitExposure(path string) string {
+	dir := filepath.Dir(path)
+	// Look for .git first: on a Mac without the developer tools, running /usr/bin/git opens an install prompt.
+	if !inWorkTree(dir) {
+		return ""
+	}
+	root, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	// Exit 1 means not ignored; tracked files never count as ignored. The base name keeps git from
+	// rejecting an absolute path that reaches the work tree through a symlink, such as /tmp.
+	var exit *exec.ExitError
+	if err := exec.Command("git", "-C", dir, "check-ignore", "-q", filepath.Base(path)).Run(); errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return strings.TrimSpace(string(root))
+	}
+	return ""
+}
+
+func inWorkTree(dir string) bool {
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // ---------- traefik ----------
@@ -1095,6 +1135,11 @@ func main() {
 	// The separator keeps the navy header apart from the dark palette's near-navy background; on light it is barely visible.
 	header := container.New(layout.NewCustomPaddedVBoxLayout(0), container.NewStack(canvas.NewRectangle(navy), container.NewPadded(container.NewPadded(container.NewBorder(nil, nil,
 		container.NewHBox(container.NewCenter(title), container.NewCenter(where)), container.NewHBox(connDot, container.NewCenter(conn)))))), widget.NewSeparator())
+	// Shown while the config is in a git work tree without being ignored; Settings is where to fix it.
+	exposedText := widget.NewLabel("")
+	exposedText.Wrapping = fyne.TextWrapWord
+	exposed := container.NewBorder(nil, nil, container.NewCenter(widget.NewIcon(theme.NewWarningThemedResource(theme.WarningIcon()))), nil, exposedText)
+	exposed.Hide()
 
 	var svcs []Service
 	var target string
@@ -1117,6 +1162,16 @@ func main() {
 		conn.Refresh()
 		where.Text = target
 		where.Refresh()
+		probe := target
+		if !isFile {
+			probe = filepath.Join(target, "service.yml")
+		}
+		if root := gitExposure(probe); root != "" {
+			exposedText.SetText("Git does not ignore this config in " + root + ", so API keys saved here can end up in a commit. Point Settings at a gitignored directory.")
+			exposed.Show()
+		} else {
+			exposed.Hide()
+		}
 		base := strings.TrimRight(s.Base, "/")
 		rows = rows[:0]
 		for _, v := range svcs {
@@ -1194,7 +1249,7 @@ func main() {
 			})
 		}),
 	)
-	body := container.NewBorder(container.NewVBox(buttons, head, widget.NewSeparator()), nil, nil, nil, container.NewStack(list, empty))
+	body := container.NewBorder(container.NewVBox(exposed, buttons, head, widget.NewSeparator()), nil, nil, nil, container.NewStack(list, empty))
 	w.SetContent(container.NewStack(container.NewBorder(header, nil, nil, nil, container.NewPadded(body)), notice.layer))
 	if _, _, err := resolve(s.Config); err != nil {
 		editSettings(w, &s, err.Error(), func(ok bool) {
