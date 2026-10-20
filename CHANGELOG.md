@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Light and dark mode, chosen under Appearance in Settings; the default follows
   the system setting.
 - Clicking a service row copies its agents call URL to the clipboard.
+- A warning above the service list when the config is in a git repository and
+  not ignored, so API keys are not committed by accident.
+- README section on using Agent Proxy with itkdev-docker's untracked
+  `traefik/dynamic.d/` config directory.
 
 ### Changed
 
@@ -35,3 +39,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning, and `task deps` and `task icon` no longer print spurious warnings.
 - `task deps` on Debian/Ubuntu installs the Wayland headers that current Fyne
   needs to build.
+- Empty or comment-only files in a config directory, such as Docker bind-mount
+  placeholders, no longer show up as unmanaged services.
